@@ -7,7 +7,7 @@ import yfinance as yf
 import OpenDartReader
 
 st.set_page_config(page_title="종합 차트 분석", page_icon="📈", layout="centered")
-st.title("📈 AI 주식 정밀 진단 리포트")
+st.title("📈 AI 기술적 심층 분석")
 
 # --- 1. DART 전 종목 리스트 (검색용) ---
 @st.cache_data(show_spinner=False)
@@ -23,14 +23,13 @@ def get_corp_dict():
         return dict(zip(listed_df['corp_name'], listed_df['stock_code']))
     except: return None
 
-# --- 2. 데이터 수집 (주가 + 펀더멘털) ---
+# --- 2. 데이터 수집 (가격 정보만 확실하게!) ---
 @st.cache_data(ttl=600)
 def get_stock_data(user_input, period_days):
     df = pd.DataFrame()
     code = ""
     name = user_input
     source = ""
-    fundamental = {} 
     
     corp_dict = get_corp_dict()
     
@@ -44,10 +43,10 @@ def get_stock_data(user_input, period_days):
         try:
             krx = fdr.StockListing('KRX')
             target = krx[krx['Name'] == user_input]
-            if target.empty: return None, None, None, None, f"'{user_input}'을 찾을 수 없습니다."
+            if target.empty: return None, None, None, f"'{user_input}'을 찾을 수 없습니다."
             code = target.iloc[0]['Code']
             name = user_input
-        except: return None, None, None, None, "검색 실패."
+        except: return None, None, None, "검색 실패."
 
     end_dt = datetime.datetime.now() + datetime.timedelta(days=1)
     start_dt = datetime.datetime.now() - datetime.timedelta(days=period_days*2)
@@ -55,25 +54,12 @@ def get_stock_data(user_input, period_days):
     try:
         candidates = [f"{code}.KS", f"{code}.KQ"]
         for ticker in candidates:
-            # 펀더멘털 정보 수집용 Ticker 객체
-            yf_ticker = yf.Ticker(ticker)
-            
-            # 주가 데이터 수집
+            # 펀더멘털 로직 삭제 -> 속도 훨씬 빨라짐
             temp_df = yf.download(ticker, start=start_dt, end=end_dt, progress=False, auto_adjust=True)
-            
             if not temp_df.empty:
                 df = temp_df
                 source = "Yahoo Finance"
                 if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-                
-                # 펀더멘털 정보 추출 (가치 평가용)
-                info = yf_ticker.info
-                fundamental = {
-                    'marketCap': info.get('marketCap', 0),
-                    'trailingPE': info.get('trailingPE', 0),
-                    'priceToBook': info.get('priceToBook', 0),
-                    'dividendRate': info.get('dividendRate', 0)
-                }
                 break
     except: pass
 
@@ -81,17 +67,16 @@ def get_stock_data(user_input, period_days):
         try:
             df = fdr.DataReader(code, start_dt)
             source = "Naver Finance"
-            fundamental = {'marketCap': 0, 'trailingPE': 0, 'priceToBook': 0, 'dividendRate': 0}
         except: pass
     
-    if df.empty: return None, None, None, None, "데이터 수집 실패."
+    if df.empty: return None, None, None, "데이터 수집 실패."
         
     df = df.dropna()
     if df.index.tz is None: df.index = df.index.tz_localize('UTC').tz_convert('Asia/Seoul')
     else: df.index = df.index.tz_convert('Asia/Seoul')
     df.index = df.index.strftime('%Y-%m-%d')
         
-    return df, name, code, fundamental, source
+    return df, name, code, source
 
 # --- 3. 지표 계산 ---
 def calculate_indicators(df):
@@ -112,7 +97,7 @@ def calculate_indicators(df):
     df['Support'] = df['Low'].rolling(60).min()
     return df
 
-# --- 4. [복구 완료] 상세 분석 엔진 (수다쟁이 버전) ---
+# --- 4. 상세 분석 엔진 (여전히 수다쟁이 버전 유지) ---
 def analyze_market(df):
     latest = df.iloc[-1]
     prev = df.iloc[-2]
@@ -130,117 +115,4 @@ def analyze_market(df):
     if latest['MA20'] > latest['MA60']:
         score += 5
         report.append("또한 20일선이 60일선 위에 있는 **정배열** 상태라 중기적인 상승 기조는 유지되고 있습니다.")
-    elif latest['MA20'] < latest['MA60']:
-        score -= 5
-        report.append("20일선이 60일선 아래에 있는 **역배열** 상태입니다. 위로 올라갈 때마다 매물 저항을 받을 수 있습니다.")
-
-    # (2) 심리 분석 (RSI)
-    if latest['RSI'] >= 70:
-        score -= 15
-        report.append(f"⚠️ **[심리]** RSI 지표가 {latest['RSI']:.0f}로 **과매수** 구간입니다. 매수세가 너무 뜨겁습니다. 단기 차익실현 매물이 쏟아질 수 있습니다.")
-    elif latest['RSI'] <= 30:
-        score += 15
-        report.append(f"💎 **[심리]** RSI 지표가 {latest['RSI']:.0f}로 **과매도** 구간입니다. 공포감에 과하게 팔린 상태라 기술적 반등이 나올 확률이 높습니다.")
-    else:
-        report.append(f"😌 **[심리]** RSI는 {latest['RSI']:.0f}로 과열되지도, 침체되지도 않은 중립적인 심리 상태입니다.")
-
-    # (3) 수급 분석 (Volume)
-    if latest['Vol_MA20'] > 0:
-        vol_ratio = (latest['Volume'] / latest['Vol_MA20']) * 100
-        if latest['Close'] > prev['Close'] and vol_ratio > 150:
-            score += 10
-            report.append(f"📢 **[수급]** 평소보다 **{vol_ratio:.0f}% 많은 거래량**을 동반하며 상승했습니다. '진짜 매수세'가 들어왔을 가능성이 큽니다.")
-        elif latest['Close'] < prev['Close'] and vol_ratio > 150:
-            score -= 10
-            report.append(f"📢 **[수급]** 하락하면서 **대량 거래({vol_ratio:.0f}%)**가 터졌습니다. 실망 매물이 쏟아지고 있으니 바닥을 확인하기 전까지 관망해야 합니다.")
-        elif latest['Close'] > prev['Close'] and vol_ratio < 50:
-            report.append("☁️ **[수급]** 주가는 올랐지만 거래량이 평소의 절반도 안 됩니다. 힘이 없는 반등이라 다시 밀릴 수 있습니다.")
-
-    # (4) 변동성 (Bollinger)
-    if latest['Close'] > latest['Upper']:
-        report.append("🔴 **[변동성]** 주가가 볼린저 밴드 상단을 뚫었습니다. 단기적으로 조정이 올 가능성이 매우 큽니다.")
-    elif latest['Close'] < latest['Lower']:
-        report.append("🔵 **[변동성]** 주가가 볼린저 밴드 하단을 뚫고 내려갔습니다. 과도한 하락으로 판단되어 기술적 반등이 기대됩니다.")
-
-    score = max(0, min(100, score))
-    
-    sentiment = "관망 (Hold)"
-    color = "gray"
-    if score >= 80: sentiment, color = "강력 매수", "green"
-    elif score >= 60: sentiment, color = "매수 우위", "blue"
-    elif score <= 20: sentiment, color = "강력 매도", "red"
-    elif score <= 40: sentiment, color = "매도 우위", "orange"
-        
-    return score, sentiment, color, report, latest['Support'], latest['Resistance']
-
-# --- 사이드바 ---
-with st.sidebar:
-    st.header("🔍 종목 검색")
-    corp_dict = get_corp_dict()
-    if corp_dict: st.caption(f"DB 연동 완료 ({len(corp_dict):,}개)")
-    user_input = st.text_input("종목명/코드", "삼성전자")
-    if st.button("🔄 새로고침"): st.cache_data.clear()
-
-# --- 메인 ---
-if user_input:
-    with st.spinner(f"'{user_input}' 분석 중..."):
-        df, name, code, fund, msg = get_stock_data(user_input, 300)
-        
-        if df is None:
-            st.error(msg)
-        else:
-            try:
-                df = calculate_indicators(df)
-                score, sentiment, color, report_text, support, resistance = analyze_market(df)
-                
-                latest = df.iloc[-1]
-                prev = df.iloc[-2]
-                change = latest['Close'] - prev['Close']
-                rate = (change / prev['Close']) * 100
-                
-                # 1. 헤드라인
-                st.markdown(f"### {name} ({code})")
-                st.metric(label="현재 주가", 
-                          value=f"{latest['Close']:,.0f}원", 
-                          delta=f"{change:,.0f}원 ({rate:.2f}%)")
-                
-                st.divider()
-
-                # 2. 펀더멘털 (가치 평가)
-                mkt_cap = fund.get('marketCap', 0) / 100000000 
-                per = fund.get('trailingPE', 0)
-                pbr = fund.get('priceToBook', 0)
-                div = fund.get('dividendRate', 0)
-                if div is None: div = 0
-
-                st.markdown("**📊 펀더멘털 (가치 평가)**")
-                c1, c2, c3 = st.columns(3)
-                c1.metric("시가총액", f"{mkt_cap:,.0f}억")
-                c2.metric("PER (주가수익)", f"{per:.1f}배" if per else "-")
-                c3.metric("PBR (주가자산)", f"{pbr:.2f}배" if pbr else "-")
-                st.caption(f"※ 배당수익률: {div*100:.1f}% (PER/PBR은 낮을수록 저평가)")
-                
-                st.divider()
-
-                # 3. 기술적 점수판
-                col1, col2 = st.columns([1, 1])
-                with col1:
-                    st.markdown(f"**AI 기술적 의견: <span style='color:{color}'>{sentiment}</span>**", unsafe_allow_html=True)
-                with col2:
-                    st.markdown(f"**종합 점수: <span style='color:{color}'>{score}점</span>**", unsafe_allow_html=True)
-                
-                st.progress(score/100)
-                st.caption(f"지지: {support:,.0f}원 / 저항: {resistance:,.0f}원")
-
-                st.divider()
-
-                # 4. 상세 리포트 (수다쟁이 버전)
-                st.subheader("📝 상세 분석 리포트")
-                for line in report_text:
-                    if "📈" in line or "💎" in line or "긍정" in line: st.success(line)
-                    elif "📉" in line or "⚠️" in line or "🔴" in line: st.error(line)
-                    else: st.info(line)
-                        
-                st.caption(f"※ 기준일: {df.index[-1]} | 데이터: {msg}")
-
-            except Exception as e: st.error(f"Error: {e}")
+    elif latest
