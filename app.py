@@ -8,19 +8,18 @@ import zipfile
 import re
 
 # 1. 페이지 설정
-st.set_page_config(page_title="DART PDF 강제 다운로더", layout="wide")
+st.set_page_config(page_title="DART PDF 강력 다운로더", layout="wide")
 
-st.title("📄 DART 보고서 PDF 싹슬이 (웹사이트 버전)")
+st.title("📄 DART 보고서 PDF 싹슬이 (최종판)")
 st.markdown("""
-공식 API가 아닌 **DART 웹사이트의 PDF 변환 기능**을 사용하여 다운로드합니다.
-(캡처해주신 화면의 그 파일을 가져옵니다!)
+DART 서버의 차단을 피하기 위해 **브라우저로 위장**하여 PDF를 다운로드합니다.
+(서버 부하 방지를 위해 속도가 조금 느릴 수 있습니다.)
 """)
 
 # 2. 사이드바 설정
 with st.sidebar:
     st.header("🔎 검색 조건")
     
-    # API 키 (금고 또는 입력)
     if "dart_api_key" in st.secrets:
         api_key = st.secrets["dart_api_key"]
         st.success("API Key 로드 완료! 🔐")
@@ -41,26 +40,40 @@ with st.sidebar:
         start_year = int(period_option.split("~")[0])
         end_year = int(period_option.split("~")[1])
 
-# --- 내부 함수: DART 웹사이트에서 PDF 주소 따오기 ---
-def get_pdf_link_from_web(rcept_no):
+# --- 내부 함수: DART PDF 주소 따오기 (강력한 위장술) ---
+def get_pdf_link_strong(rcept_no):
     try:
-        # 1. 보고서 뷰어 페이지 접속
+        # 가짜 헤더 (나는 로봇이 아니다!)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': f'http://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}',
+            'Host': 'dart.fss.or.kr',
+            'Connection': 'keep-alive'
+        }
+        
+        # 1. 뷰어 페이지 접속
         url = f"http://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        response = requests.get(url, headers=headers)
+        session = requests.Session()
+        response = session.get(url, headers=headers, timeout=10)
         
-        # 2. 페이지 안에 숨겨진 'dcmNo' (문서번호) 찾기
-        # DART 소스코드에는 "dcmNo" : "1234567" 형태로 숨어있음
-        match = re.search(r'dcmNo"\s*:\s*"(\d+)"', response.text)
+        # 2. 숨겨진 dcmNo 찾기 (여러가지 패턴으로 시도)
+        text = response.text
         
+        # 패턴 1: Javascript viewDoc 함수 내부
+        match = re.search(r"viewDoc\('(\d+)', '(\d+)', '(\d+)', '(\d+)', '(\d+)', '(\S+)'\);", text)
         if match:
-            dcm_no = match.group(1)
-            # 3. PDF 다운로드 링크 조립
-            pdf_url = f"http://dart.fss.or.kr/pdf/download/pdf.do?rcp_no={rcept_no}&dcm_no={dcm_no}"
-            return pdf_url
-        else:
-            return None
-    except:
+            dcm_no = match.group(2) # 두 번째 숫자가 dcmNo
+            return f"http://dart.fss.or.kr/pdf/download/pdf.do?rcp_no={rcept_no}&dcm_no={dcm_no}"
+        
+        # 패턴 2: 직접적인 변수 선언
+        match2 = re.search(r'dcmNo"\s*:\s*"(\d+)"', text)
+        if match2:
+            dcm_no = match2.group(1)
+            return f"http://dart.fss.or.kr/pdf/download/pdf.do?rcp_no={rcept_no}&dcm_no={dcm_no}"
+
+        return None
+    except Exception as e:
+        print(f"Error: {e}")
         return None
 
 # 메인 로직
@@ -73,10 +86,10 @@ if api_key and corp_name:
         # --- 기능 1: PDF 강제 다운로드 ---
         with col1:
             st.subheader("📑 1. 보고서 PDF 다운로드")
-            st.info(f"{start_year}~{end_year}년 보고서의 **DART 생성 PDF**를 가져옵니다.")
+            st.info(f"{start_year}~{end_year}년 보고서를 '사람인 척' 접속해서 가져옵니다.")
             
             if st.button("PDF 싹 다 다운받기"):
-                with st.spinner("보고서 목록을 검색 중..."):
+                with st.spinner("보고서 목록 조회 중..."):
                     start_date = str(start_year) + "0101"
                     end_date = str(end_year) + "1231"
                     # 사업, 반기, 분기 보고서 검색
@@ -86,7 +99,7 @@ if api_key and corp_name:
                     st.error("해당 기간에 보고서가 없습니다.")
                 else:
                     count = len(report_list)
-                    st.write(f"총 {count}개의 보고서를 찾았습니다. 다운로드를 시작합니다!")
+                    st.write(f"총 {count}개의 보고서를 찾았습니다. 다운로드 시작! (시간이 좀 걸립니다)")
                     
                     progress_bar = st.progress(0)
                     status_text = st.empty()
@@ -100,29 +113,36 @@ if api_key and corp_name:
                             report_nm = row['report_nm']
                             rcept_dt = row['rcept_dt']
                             
-                            status_text.text(f"[{i+1}/{count}] {report_nm} PDF 변환 다운로드 중...")
+                            status_text.markdown(f"**[{i+1}/{count}]** `{report_nm}` 처리 중...")
                             
-                            # 웹사이트 크롤링 방식으로 PDF 주소 획득
-                            pdf_url = get_pdf_link_from_web(rcept_no)
+                            # 강력한 함수로 PDF 주소 따오기
+                            pdf_url = get_pdf_link_strong(rcept_no)
                             
                             if pdf_url:
-                                # PDF 다운로드 요청
-                                pdf_res = requests.get(pdf_url)
-                                if pdf_res.status_code == 200:
-                                    clean_name = f"{rcept_dt}_{report_nm}.pdf"
-                                    master_zip.writestr(clean_name, pdf_res.content)
-                                    success_count += 1
-                                else:
-                                    pass # 다운로드 실패
+                                try:
+                                    # PDF 다운로드 (여기도 위장 헤더 사용)
+                                    headers = {
+                                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                                    }
+                                    pdf_res = requests.get(pdf_url, headers=headers, timeout=15)
+                                    
+                                    if pdf_res.status_code == 200 and len(pdf_res.content) > 1000:
+                                        clean_name = f"{rcept_dt}_{report_nm}.pdf"
+                                        master_zip.writestr(clean_name, pdf_res.content)
+                                        success_count += 1
+                                    else:
+                                        print(f"다운로드 실패: {report_nm}")
+                                except:
+                                    pass
                             else:
-                                pass # 문서번호 못 찾음
+                                print(f"문서번호 추출 실패: {report_nm}")
                             
-                            # 웹사이트 접속이므로 너무 빠르면 차단당할 수 있어 조금 천천히 함
-                            time.sleep(0.5) 
+                            # DART 서버가 눈치채지 못하게 1초 쉬기 (중요!)
+                            time.sleep(1) 
                             progress_bar.progress((i + 1) / count)
                     
                     if success_count > 0:
-                        st.success(f"성공! 총 {success_count}개의 PDF를 확보했습니다.")
+                        st.success(f"🎉 성공! 총 {success_count}개의 PDF를 확보했습니다.")
                         st.download_button(
                             label="📦 PDF 모음(ZIP) 다운로드",
                             data=zip_buffer.getvalue(),
@@ -130,12 +150,12 @@ if api_key and corp_name:
                             mime="application/zip"
                         )
                     else:
-                        st.error("PDF를 하나도 못 건졌습니다. DART 웹사이트 접속이 차단되었거나 문서가 너무 오래되었습니다.")
+                        st.error("😢 PDF를 가져오지 못했습니다. (서버 보안이 너무 강력하여 클라우드 접속을 차단했을 수 있습니다.)")
 
         # --- 기능 2: 재무제표 통합 엑셀 (기존 유지) ---
         with col2:
             st.subheader("💰 2. 재무제표 통합 엑셀")
-            st.info("재무데이터는 엑셀로 깔끔하게 정리해드립니다.")
+            st.info("재무데이터는 문제없이 잘 작동합니다!")
             
             if st.button("재무제표 일괄 수집 시작"):
                 progress_bar2 = st.progress(0)
