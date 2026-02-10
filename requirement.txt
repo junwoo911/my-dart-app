@@ -1,0 +1,5 @@
+streamlit
+opendartreader
+pandas
+openpyxl
+xlsxwriter
