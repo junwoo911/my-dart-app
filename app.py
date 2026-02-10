@@ -17,7 +17,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 스타일 커스텀 (버튼 강조)
+# 스타일 커스텀
 st.markdown("""
     <style>
     .stButton>button {
@@ -27,7 +27,6 @@ st.markdown("""
         font-weight: bold;
         font-size: 16px;
     }
-    /* 다운로드 버튼은 특별히 파란색으로 */
     div[data-testid="stDownloadButton"] > button {
         background-color: #007BFF;
         color: white;
@@ -44,7 +43,10 @@ st.title("📱 DART 원클릭 다운로더")
 if 'search_result' not in st.session_state:
     st.session_state.search_result = None
 if 'xml_zip_data' not in st.session_state:
-    st.session_state.xml_zip_data = None # XML 파일 데이터 저장소
+    st.session_state.xml_zip_data = None
+# [NEW] 기간 정보를 기억할 변수 추가
+if 'search_period' not in st.session_state:
+    st.session_state.search_period = ""
 
 # 2. API 키 설정
 api_key = None
@@ -71,12 +73,10 @@ with st.form(key='search_form'):
     )
     
     st.markdown("---")
-    # [핵심 기능] 체크박스 추가
-    auto_prepare = st.checkbox("⚡ 조회 시 다운로드 파일 바로 생성하기", value=True, help="체크하면 조회가 좀 오래 걸리는 대신, 끝나자마자 바로 다운로드 버튼이 뜹니다.")
+    auto_prepare = st.checkbox("⚡ 조회 시 다운로드 파일 바로 생성하기", value=True)
 
     submit_button = st.form_submit_button(label="🔍 조회 및 실행")
 
-# --- 내부 함수: 파일명 정리 ---
 def clean_filename(text):
     return re.sub(r'[\\/*?:"<>|]', "_", text)
 
@@ -112,9 +112,12 @@ if submit_button:
                             st.session_state.search_result = None
                         else:
                             st.session_state.search_result = filtered_list
-                            st.session_state.xml_zip_data = None # 초기화
+                            st.session_state.xml_zip_data = None
                             
-                            # [핵심] 사용자가 '바로 생성'을 체크했다면 여기서 바로 만듭니다!
+                            # [NEW] 파일명에 쓸 기간 정보를 저장 (예: 2021-2025)
+                            st.session_state.search_period = f"{start_year}-{end_year}"
+                            
+                            # 자동 생성 로직
                             if auto_prepare:
                                 log_text = st.empty()
                                 progress_bar = st.progress(0)
@@ -153,7 +156,6 @@ if submit_button:
                                         time.sleep(0.1)
                                         progress_bar.progress((i + 1) / count)
                                 
-                                # 다 만든 데이터를 기억장치에 저장
                                 if success_cnt > 0:
                                     st.session_state.xml_zip_data = zip_buffer.getvalue()
                                     st.success(f"준비 끝! {success_cnt}개 파일이 다운로드 대기 중입니다.")
@@ -169,30 +171,29 @@ if submit_button:
 if st.session_state.search_result is not None:
     df = st.session_state.search_result
     
+    # [NEW] 파일명 생성을 위한 변수 가져오기
+    period_str = st.session_state.search_period
+    
     st.divider()
     
-    # 탭 구성
     tab1, tab2 = st.tabs(["🚀 XML 다운로드", "📊 재무제표"])
 
     with tab1:
-        # 이미 데이터가 준비되어 있으면 바로 다운로드 버튼 표시
         if st.session_state.xml_zip_data is not None:
-            st.info("파일 준비가 완료되었습니다. 아래 버튼을 누르세요!")
+            st.info("파일 준비가 완료되었습니다.")
             st.download_button(
                 label="📥 ZIP 파일 즉시 다운로드",
                 data=st.session_state.xml_zip_data,
-                file_name=f"{corp_name}_본문모음.zip",
+                # [NEW] 파일명 변경: 회사명_기간_보고서.zip
+                file_name=f"{corp_name}_{period_str}_보고서.zip",
                 mime="application/zip"
             )
         else:
-            # 준비 안 됐으면 기존처럼 생성 버튼 표시
             st.warning("아직 파일이 생성되지 않았습니다.")
             if st.button("파일 생성 시작하기"):
-                # (여기는 자동생성 체크 안 했을 때를 위한 비상용)
                 st.rerun()
 
     with tab2:
-        # 재무제표는 용량이 작아서 금방 되므로 버튼 유지
         if st.button("재무제표 엑셀 생성"):
             with st.spinner("재무 데이터 수집 중..."):
                 all_financials = []
@@ -212,6 +213,13 @@ if st.session_state.search_result is not None:
                     merged = pd.concat(all_financials)
                     buf = io.BytesIO()
                     with pd.ExcelWriter(buf) as w: merged.to_excel(w, index=False)
-                    st.download_button("📥 엑셀 다운로드", buf.getvalue(), f"{corp_name}_재무.xlsx")
+                    
+                    # [NEW] 파일명 변경: 회사명_기간_재무제표.xlsx
+                    st.download_button(
+                        label="📥 엑셀 다운로드", 
+                        data=buf.getvalue(), 
+                        file_name=f"{corp_name}_{period_str}_재무제표.xlsx",
+                        mime="application/vnd.ms-excel"
+                    )
                 else:
                     st.warning("데이터 없음")
