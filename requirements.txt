@@ -6,3 +6,5 @@ xlsxwriter
 requests
 finance-datareader
 yfinance
+lxml
+plotly
