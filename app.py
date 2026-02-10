@@ -5,20 +5,22 @@ import io
 import time
 import requests
 import zipfile
+import re
 
 # 1. 페이지 설정
-st.set_page_config(page_title="DART PDF 일괄 다운로더", layout="wide")
+st.set_page_config(page_title="DART PDF 강제 다운로더", layout="wide")
 
-st.title("📄 DART 보고서 PDF 싹슬이")
+st.title("📄 DART 보고서 PDF 싹슬이 (웹사이트 버전)")
 st.markdown("""
-보고서에 **첨부된 PDF 파일**만 골라서 다운로드합니다.
-(주의: 회사가 PDF를 첨부하지 않은 경우에는 다운로드되지 않을 수 있습니다.)
+공식 API가 아닌 **DART 웹사이트의 PDF 변환 기능**을 사용하여 다운로드합니다.
+(캡처해주신 화면의 그 파일을 가져옵니다!)
 """)
 
 # 2. 사이드바 설정
 with st.sidebar:
     st.header("🔎 검색 조건")
     
+    # API 키 (금고 또는 입력)
     if "dart_api_key" in st.secrets:
         api_key = st.secrets["dart_api_key"]
         st.success("API Key 로드 완료! 🔐")
@@ -39,6 +41,28 @@ with st.sidebar:
         start_year = int(period_option.split("~")[0])
         end_year = int(period_option.split("~")[1])
 
+# --- 내부 함수: DART 웹사이트에서 PDF 주소 따오기 ---
+def get_pdf_link_from_web(rcept_no):
+    try:
+        # 1. 보고서 뷰어 페이지 접속
+        url = f"http://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get(url, headers=headers)
+        
+        # 2. 페이지 안에 숨겨진 'dcmNo' (문서번호) 찾기
+        # DART 소스코드에는 "dcmNo" : "1234567" 형태로 숨어있음
+        match = re.search(r'dcmNo"\s*:\s*"(\d+)"', response.text)
+        
+        if match:
+            dcm_no = match.group(1)
+            # 3. PDF 다운로드 링크 조립
+            pdf_url = f"http://dart.fss.or.kr/pdf/download/pdf.do?rcp_no={rcept_no}&dcm_no={dcm_no}"
+            return pdf_url
+        else:
+            return None
+    except:
+        return None
+
 # 메인 로직
 if api_key and corp_name:
     try:
@@ -46,10 +70,10 @@ if api_key and corp_name:
         
         col1, col2 = st.columns(2)
         
-        # --- 기능 1: PDF 일괄 다운로드 ---
+        # --- 기능 1: PDF 강제 다운로드 ---
         with col1:
             st.subheader("📑 1. 보고서 PDF 다운로드")
-            st.info(f"{start_year}~{end_year}년 보고서의 PDF 버전을 찾아서 모읍니다.")
+            st.info(f"{start_year}~{end_year}년 보고서의 **DART 생성 PDF**를 가져옵니다.")
             
             if st.button("PDF 싹 다 다운받기"):
                 with st.spinner("보고서 목록을 검색 중..."):
@@ -62,7 +86,7 @@ if api_key and corp_name:
                     st.error("해당 기간에 보고서가 없습니다.")
                 else:
                     count = len(report_list)
-                    st.write(f"총 {count}개의 보고서를 찾았습니다. PDF 탐색을 시작합니다!")
+                    st.write(f"총 {count}개의 보고서를 찾았습니다. 다운로드를 시작합니다!")
                     
                     progress_bar = st.progress(0)
                     status_text = st.empty()
@@ -76,45 +100,29 @@ if api_key and corp_name:
                             report_nm = row['report_nm']
                             rcept_dt = row['rcept_dt']
                             
-                            status_text.text(f"[{i+1}/{count}] {report_nm}의 PDF를 찾는 중...")
+                            status_text.text(f"[{i+1}/{count}] {report_nm} PDF 변환 다운로드 중...")
                             
-                            try:
-                                # 해당 보고서의 첨부파일 목록 조회
-                                attaches = dart.attach(rcept_no)
-                                
-                                pdf_url = None
-                                pdf_name = None
-                                
-                                # 첨부파일 중 .pdf로 끝나는 것 찾기
-                                if attaches:
-                                    for title, url in attaches.items():
-                                        if title.lower().endswith(".pdf"):
-                                            pdf_url = url
-                                            pdf_name = title
-                                            break # PDF 하나 찾으면 바로 중단 (보통 첫번째가 메인)
-                                
-                                if pdf_url:
-                                    # PDF 다운로드
-                                    response = requests.get(pdf_url)
-                                    if response.status_code == 200:
-                                        # 파일명 보기 좋게 정리 (날짜_보고서명.pdf)
-                                        clean_name = f"{rcept_dt}_{report_nm}.pdf"
-                                        master_zip.writestr(clean_name, response.content)
-                                        success_count += 1
-                                    else:
-                                        pass
+                            # 웹사이트 크롤링 방식으로 PDF 주소 획득
+                            pdf_url = get_pdf_link_from_web(rcept_no)
+                            
+                            if pdf_url:
+                                # PDF 다운로드 요청
+                                pdf_res = requests.get(pdf_url)
+                                if pdf_res.status_code == 200:
+                                    clean_name = f"{rcept_dt}_{report_nm}.pdf"
+                                    master_zip.writestr(clean_name, pdf_res.content)
+                                    success_count += 1
                                 else:
-                                    # PDF가 없는 경우 (XML만 있는 경우)
-                                    pass
-                                    
-                            except Exception as e:
-                                pass # 에러나도 다음 파일로 계속 진행
+                                    pass # 다운로드 실패
+                            else:
+                                pass # 문서번호 못 찾음
                             
-                            time.sleep(0.2) # 서버 부하 방지
+                            # 웹사이트 접속이므로 너무 빠르면 차단당할 수 있어 조금 천천히 함
+                            time.sleep(0.5) 
                             progress_bar.progress((i + 1) / count)
                     
                     if success_count > 0:
-                        st.success(f"완료! 총 {success_count}개의 PDF 파일을 찾았습니다.")
+                        st.success(f"성공! 총 {success_count}개의 PDF를 확보했습니다.")
                         st.download_button(
                             label="📦 PDF 모음(ZIP) 다운로드",
                             data=zip_buffer.getvalue(),
@@ -122,12 +130,12 @@ if api_key and corp_name:
                             mime="application/zip"
                         )
                     else:
-                        st.warning("이 회사는 해당 기간에 PDF 첨부 파일을 제공하지 않습니다. (XML 다운로드를 이용하세요)")
+                        st.error("PDF를 하나도 못 건졌습니다. DART 웹사이트 접속이 차단되었거나 문서가 너무 오래되었습니다.")
 
         # --- 기능 2: 재무제표 통합 엑셀 (기존 유지) ---
         with col2:
             st.subheader("💰 2. 재무제표 통합 엑셀")
-            st.info("재무데이터는 엑셀로 받는 게 국룰입니다.")
+            st.info("재무데이터는 엑셀로 깔끔하게 정리해드립니다.")
             
             if st.button("재무제표 일괄 수집 시작"):
                 progress_bar2 = st.progress(0)
