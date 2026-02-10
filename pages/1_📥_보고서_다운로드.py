@@ -19,7 +19,6 @@ if not api_key:
         st.error("⚠️ Home에서 API 키를 입력해주세요.")
         st.stop()
 
-# --- 도움말 ---
 st.info("💡 PDF보다 텍스트 추출 방식이 AI의 수치 계산 정확도를 **5배 이상** 높여줍니다.")
 
 # --- 입력 폼 ---
@@ -34,12 +33,9 @@ with st.sidebar:
 # --- 내부 함수: 표 구조를 유지하며 텍스트 추출 ---
 def extract_ai_friendly_text(html_content):
     soup = BeautifulSoup(html_content, "html.parser")
-    
-    # 1. 필요 없는 태그 제거 (스크립트, 스타일)
     for s in soup(["script", "style", "head", "title"]):
         s.decompose()
 
-    # 2. 표(Table) 처리: AI가 읽기 쉽게 Markdown 느낌으로 변환
     for table in soup.find_all("table"):
         rows = []
         for tr in table.find_all("tr"):
@@ -48,9 +44,8 @@ def extract_ai_friendly_text(html_content):
         table_text = "\n" + "\n".join(rows) + "\n"
         table.replace_with(table_text)
 
-    # 3. 줄바꿈 정제
     text = soup.get_text(separator="\n")
-    clean_text = re.sub(r'\n\s*\n+', '\n\n', text) # 불필요한 빈 줄 제거
+    clean_text = re.sub(r'\n\s*\n+', '\n\n', text)
     return clean_text
 
 # --- 검색 결과 처리 ---
@@ -59,7 +54,10 @@ if submit:
         dart = OpenDartReader(api_key)
         df = dart.list(corp_name, start=f"{years[0]}0101", end=f"{years[1]}1231", kind='A')
         if df is not None and len(df) > 0:
+            # 보고서 종류 필터링
             df = df[df['report_nm'].str.contains('|'.join(target_reports))]
+            # 인덱스를 0, 1, 2... 순서로 초기화 (에러 방지 핵심!)
+            df = df.reset_index(drop=True)
             st.session_state.reports_df = df
             st.success(f"{len(df)}건의 보고서를 찾았습니다.")
         else:
@@ -73,27 +71,27 @@ if 'reports_df' in st.session_state:
     
     if st.button("🚀 AI용 텍스트 파일 생성 (전체 통합)"):
         combined_text = f"### {corp_name} AI 분석용 통합 데이터 ({years[0]}~{years[1]}) ###\n\n"
-        progress = st.progress(0)
+        progress = st.progress(0.0)
+        status_text = st.empty()
         
-        for idx, row in reports.iterrows():
+        # [수정] enumerate를 사용하여 정확한 순서(i)를 가져옴
+        total_len = len(reports)
+        for i, (idx, row) in enumerate(reports.iterrows()):
             rcept_no = row['rcept_no']
             report_nm = row['report_nm']
+            status_text.text(f"⏳ ({i+1}/{total_len}) {report_nm} 추출 중...")
             
             try:
-                # DART 원본 ZIP 다운로드
                 url = f"https://opendart.fss.or.kr/api/document.xml?crtfc_key={api_key}&rcept_no={rcept_no}"
                 res = requests.get(url)
                 
                 with zipfile.ZipFile(io.BytesIO(res.content)) as z:
-                    # 메인 문서 파일 찾기 (보통 가장 용량이 큰 .xml이나 .html)
                     target_file = max(z.infolist(), key=lambda f: f.file_size).filename
                     raw_content = z.read(target_file)
                     
-                    # 인코딩 대응
                     try: content = raw_content.decode('utf-8')
                     except: content = raw_content.decode('euc-kr', 'ignore')
                     
-                    # 텍스트 추출 가공
                     refined_text = extract_ai_friendly_text(content)
                     
                     combined_text += f"\n\n{'='*50}\n"
@@ -102,11 +100,13 @@ if 'reports_df' in st.session_state:
                     combined_text += refined_text
                     
             except Exception as e:
-                combined_text += f"\n\n[오류 발생: {report_nm} 데이터 추출 실패]\n"
+                combined_text += f"\n\n[오류 발생: {report_nm} 추출 실패]\n"
             
-            progress.progress((idx + 1) / len(reports))
+            # [수정] i를 사용해 진행률 계산 (0.0 ~ 1.0)
+            progress.progress((i + 1) / total_len)
         
-        st.success("✅ 추출 완료!")
+        status_text.text("✅ 모든 보고서 추출 완료!")
+        st.success("압축 해제 및 텍스트 구조화가 완료되었습니다.")
         st.download_button(
             label="📄 통합 텍스트 파일 다운로드",
             data=combined_text,
