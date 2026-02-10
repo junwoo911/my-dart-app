@@ -11,8 +11,8 @@ import json
 
 # 1. 페이지 설정
 st.set_page_config(
-    page_title="DART 모바일",
-    page_icon="📱",
+    page_title="DART 모바일 (디버그)",
+    page_icon="🐞",
     layout="centered",
     initial_sidebar_state="collapsed"
 )
@@ -37,14 +37,13 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("📱 DART 원클릭 다운로더")
+st.title("🐞 DART 문제 해결 모드")
 
 # --- 기억 장치 초기화 ---
 if 'search_result' not in st.session_state:
     st.session_state.search_result = None
 if 'xml_zip_data' not in st.session_state:
     st.session_state.xml_zip_data = None
-# [NEW] 기간 정보를 기억할 변수 추가
 if 'search_period' not in st.session_state:
     st.session_state.search_period = ""
 
@@ -97,10 +96,16 @@ if submit_button:
                     # 1. 목록 조회
                     start_date = str(start_year) + "0101"
                     end_date = str(end_year) + "1231"
-                    report_list = dart.list(corp_name, start=start_date, end=end_date, kind='A')
                     
+                    # [디버그] 목록 조회 에러 체크
+                    try:
+                        report_list = dart.list(corp_name, start=start_date, end=end_date, kind='A')
+                    except Exception as e:
+                        st.error(f"❌ 목록 조회 실패: {e}")
+                        report_list = None
+
                     if report_list is None or len(report_list) == 0:
-                        st.error("보고서가 없습니다.")
+                        st.error("보고서가 없거나 API 키가 잘못되었습니다.")
                         st.session_state.search_result = None
                         st.session_state.xml_zip_data = None
                     else:
@@ -113,8 +118,6 @@ if submit_button:
                         else:
                             st.session_state.search_result = filtered_list
                             st.session_state.xml_zip_data = None
-                            
-                            # [NEW] 파일명에 쓸 기간 정보를 저장 (예: 2021-2025)
                             st.session_state.search_period = f"{start_year}-{end_year}"
                             
                             # 자동 생성 로직
@@ -124,6 +127,8 @@ if submit_button:
                                 zip_buffer = io.BytesIO()
                                 count = len(filtered_list)
                                 success_cnt = 0
+                                fail_cnt = 0
+                                last_error_msg = ""
                                 
                                 with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as master_zip:
                                     for i, row in filtered_list.iterrows():
@@ -136,7 +141,15 @@ if submit_button:
                                         try:
                                             url = f"https://opendart.fss.or.kr/api/document.xml?crtfc_key={api_key}&rcept_no={rcept_no}"
                                             res = requests.get(url)
-                                            if not res.content.startswith(b'{'):
+                                            
+                                            # [디버그] DART 에러 메시지 확인
+                                            if res.content.startswith(b'{'):
+                                                err_json = json.loads(res.content)
+                                                err_msg = err_json.get('message', '알 수 없는 오류')
+                                                print(f"API Error: {err_msg}")
+                                                last_error_msg = err_msg
+                                                fail_cnt += 1
+                                            else:
                                                 with zipfile.ZipFile(io.BytesIO(res.content)) as inner_zip:
                                                     max_size = 0
                                                     best_file_name = None
@@ -152,26 +165,29 @@ if submit_button:
                                                         new_name = f"{rcept_dt}_{report_nm}.{ext}"
                                                         master_zip.writestr(new_name, source_data)
                                                         success_cnt += 1
-                                        except: pass
+                                        except Exception as e:
+                                            fail_cnt += 1
+                                            last_error_msg = str(e)
+                                        
                                         time.sleep(0.1)
                                         progress_bar.progress((i + 1) / count)
                                 
                                 if success_cnt > 0:
                                     st.session_state.xml_zip_data = zip_buffer.getvalue()
-                                    st.success(f"준비 끝! {success_cnt}개 파일이 다운로드 대기 중입니다.")
+                                    st.success(f"준비 끝! (성공: {success_cnt}, 실패: {fail_cnt})")
+                                    if fail_cnt > 0:
+                                        st.warning(f"⚠️ 일부 실패 원인: {last_error_msg}")
                                 else:
-                                    st.error("파일 생성 실패")
+                                    st.error(f"❌ 파일 생성 실패! 원인: {last_error_msg}")
                             else:
                                 st.success(f"조회 완료! (총 {len(filtered_list)}건)")
 
         except Exception as e:
-            st.error(f"에러 발생: {e}")
+            st.error(f"❌ 시스템 에러 발생: {e}")
 
 # --- 결과 화면 ---
 if st.session_state.search_result is not None:
     df = st.session_state.search_result
-    
-    # [NEW] 파일명 생성을 위한 변수 가져오기
     period_str = st.session_state.search_period
     
     st.divider()
@@ -184,7 +200,6 @@ if st.session_state.search_result is not None:
             st.download_button(
                 label="📥 ZIP 파일 즉시 다운로드",
                 data=st.session_state.xml_zip_data,
-                # [NEW] 파일명 변경: 회사명_기간_보고서.zip
                 file_name=f"{corp_name}_{period_str}_보고서.zip",
                 mime="application/zip"
             )
@@ -196,30 +211,27 @@ if st.session_state.search_result is not None:
     with tab2:
         if st.button("재무제표 엑셀 생성"):
             with st.spinner("재무 데이터 수집 중..."):
-                all_financials = []
-                years = sorted(list(set(df['rcept_dt'].str[:4])))
-                codes_to_fetch = [('11011','사업'),('11012','반기'),('11013','1분기'),('11014','3분기')]
-                
-                for year in years:
-                    for code, name in codes_to_fetch:
-                        try:
-                            fs = dart.finstate(corp_name, year, code)
-                            if fs is not None:
-                                fs['귀속년도']=year; fs['보고서']=name; all_financials.append(fs)
-                            time.sleep(0.1)
-                        except: pass
-                
-                if all_financials:
-                    merged = pd.concat(all_financials)
-                    buf = io.BytesIO()
-                    with pd.ExcelWriter(buf) as w: merged.to_excel(w, index=False)
+                # [디버그] 재무제표 에러 체크
+                try:
+                    all_financials = []
+                    years = sorted(list(set(df['rcept_dt'].str[:4])))
+                    codes_to_fetch = [('11011','사업'),('11012','반기'),('11013','1분기'),('11014','3분기')]
                     
-                    # [NEW] 파일명 변경: 회사명_기간_재무제표.xlsx
-                    st.download_button(
-                        label="📥 엑셀 다운로드", 
-                        data=buf.getvalue(), 
-                        file_name=f"{corp_name}_{period_str}_재무제표.xlsx",
-                        mime="application/vnd.ms-excel"
-                    )
-                else:
-                    st.warning("데이터 없음")
+                    for year in years:
+                        for code, name in codes_to_fetch:
+                            try:
+                                fs = dart.finstate(corp_name, year, code)
+                                if fs is not None:
+                                    fs['귀속년도']=year; fs['보고서']=name; all_financials.append(fs)
+                                time.sleep(0.1)
+                            except: pass
+                    
+                    if all_financials:
+                        merged = pd.concat(all_financials)
+                        buf = io.BytesIO()
+                        with pd.ExcelWriter(buf) as w: merged.to_excel(w, index=False)
+                        st.download_button("📥 엑셀 다운로드", buf.getvalue(), f"{corp_name}_{period_str}_재무제표.xlsx")
+                    else:
+                        st.warning("데이터를 찾을 수 없습니다. (API 한도 초과일 수 있음)")
+                except Exception as e:
+                    st.error(f"재무제표 생성 실패: {e}")
