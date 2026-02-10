@@ -9,9 +9,13 @@ st.set_page_config(page_title="내 손안의 공시 다운로더", layout="cente
 st.title("📊 DART 재무제표 다운로더")
 st.write("스마트폰에서 간편하게 공시 데이터를 받아보세요.")
 
-# 2. API 키 입력받기 (보안을 위해 매번 입력하거나, 저장해둘 수 있음)
-api_key = st.text_input("OpenDART API Key를 입력하세요", type="password")
-
+# 2. 서버 금고에서 API 키 가져오기 (자동 입력)
+if "dart_api_key" in st.secrets:
+    api_key = st.secrets["dart_api_key"]
+else:
+    # 혹시 금고 설정이 안 되어 있을 때를 대비해 입력창 남겨두기
+    api_key = st.text_input("OpenDART API Key를 입력하세요", type="password")
+    
 if api_key:
     try:
         # DART 객체 생성
@@ -56,4 +60,5 @@ if api_key:
         st.error(f"오류가 발생했습니다: {e}")
         st.info("API 키가 정확한지 확인해주세요.")
 else:
+
     st.info("👆 먼저 API Key를 입력해주세요.")
