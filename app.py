@@ -6,215 +6,199 @@ import time
 import requests
 import zipfile
 import re
+import datetime
 
-# 1. 페이지 설정
-st.set_page_config(page_title="DART 맞춤형 다운로더", layout="wide")
+# 1. 페이지 설정 (모바일 친화적)
+st.set_page_config(
+    page_title="DART 모바일",
+    page_icon="📱",
+    layout="centered", # 모바일은 centered가 보기 좋습니다
+    initial_sidebar_state="collapsed"
+)
 
-st.title("🎯 DART 보고서 골라담기")
+# 스타일 커스텀 (버튼을 꽉 차게, 여백 조정)
 st.markdown("""
-원하는 **회사**, 원하는 **기간**, 원하는 **보고서 종류**만 쏙쏙 골라서 다운로드하세요.
-(본문 추출 기능 & 재무제표 통합 기능 포함)
-""")
+    <style>
+    .stButton>button {
+        width: 100%;
+        border-radius: 10px;
+        height: 3em;
+        font-weight: bold;
+    }
+    div.block-container {
+        padding-top: 2rem;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-# 2. 사이드바 설정 (여기가 많이 바뀝니다!)
-with st.sidebar:
-    st.header("🔎 검색 조건 설정")
-    
-    # (1) API 키
-    if "dart_api_key" in st.secrets:
-        api_key = st.secrets["dart_api_key"]
-        st.success("API Key 로드 완료! 🔐")
-    else:
+st.title("📱 내 손안의 DART")
+
+# 2. 설정 및 입력 (사이드바 대신 메인 화면에 배치)
+# API 키는 금고에 있으면 패스, 없으면 확장 메뉴(Expander)로 숨김
+api_key = None
+if "dart_api_key" in st.secrets:
+    api_key = st.secrets["dart_api_key"]
+else:
+    with st.expander("🔐 API 키 설정 (클릭)", expanded=False):
         api_key = st.text_input("OpenDART API Key", type="password")
 
-    # (2) 회사명 (기본값 공란 처리)
-    corp_name = st.text_input("회사명", "", placeholder="예: 삼성전자, 현대자동차")
-    
-    st.markdown("---")
-    
-    # (3) 기간 선택
-    st.subheader("📅 기간 선택")
-    period_option = st.radio(
-        "기간 단위",
-        ("2021~2025", "2016~2020", "2011~2015", "직접입력")
-    )
-    
-    if period_option == "직접입력":
-        col_y1, col_y2 = st.columns(2)
-        with col_y1:
-            start_year = st.number_input("시작", 2000, 2030, 2024)
-        with col_y2:
-            end_year = st.number_input("종료", 2000, 2030, 2024)
-    else:
-        start_year = int(period_option.split("~")[0])
-        end_year = int(period_option.split("~")[1])
+# --- 입력 폼 (여기서 엔터 치면 실행됨) ---
+with st.form(key='search_form'):
+    # (1) 회사명 입력
+    corp_name = st.text_input("회사명", placeholder="예: 삼성전자 (입력 후 조회)")
 
-    st.markdown("---")
+    # (2) 기간 선택 (2단 배열)
+    st.write("📅 조회 기간")
+    col1, col2 = st.columns(2)
+    with col1:
+        # 기본값: 작년
+        default_start = datetime.datetime.now().year - 1
+        start_year = st.number_input("시작 연도", 2000, 2030, default_start)
+    with col2:
+        # 기본값: 올해
+        default_end = datetime.datetime.now().year
+        end_year = st.number_input("종료 연도", 2000, 2030, default_end)
 
-    # (4) [NEW] 보고서 종류 선택 (멀티 선택 기능)
-    st.subheader("📑 문서 종류 선택")
+    # (3) 보고서 종류 (칩 형태로 선택)
+    st.write("📑 보고서 종류")
     target_reports = st.multiselect(
-        "다운로드할 보고서를 선택하세요",
+        "포함할 보고서 선택",
         ["사업보고서", "반기보고서", "분기보고서"],
-        default=["사업보고서", "반기보고서", "분기보고서"] # 기본은 전체 선택
+        default=["사업보고서", "반기보고서", "분기보고서"]
     )
-    
-    st.caption("💡 '분기보고서'를 선택하면 1분기/3분기 보고서를 모두 포함합니다.")
+
+    # (4) 조회 버튼 (가장 중요!)
+    submit_button = st.form_submit_button(label="🔍 조회 시작")
 
 
-# --- 파일명 정리 함수 ---
+# --- 내부 함수들 (파일명 정리 등) ---
 def clean_filename(text):
     return re.sub(r'[\\/*?:"<>|]', "_", text)
 
-# 메인 로직
-if api_key and corp_name: # 회사명이 입력되었을 때만 실행
-    try:
-        dart = OpenDartReader(api_key)
-        
-        col1, col2 = st.columns(2)
-        
-        # --- 기능 1: 본문만 쏙 뽑기 (필터 적용) ---
-        with col1:
-            st.subheader("📑 1. 보고서 본문(XML) 다운로드")
+# --- 메인 로직 (조회 버튼을 눌렀을 때만 실행) ---
+if submit_button:
+    if not api_key:
+        st.error("API 키가 필요합니다. 설정 메뉴를 확인해주세요.")
+    elif not corp_name:
+        st.warning("회사명을 입력해주세요.")
+    elif not target_reports:
+        st.warning("보고서 종류를 선택해주세요.")
+    else:
+        try:
+            dart = OpenDartReader(api_key)
             
-            # 선택한 보고서 종류 보여주기
-            selected_str = ", ".join(target_reports)
-            st.info(f"**{corp_name}**의 **{start_year}~{end_year}년** **[{selected_str}]** 본문을 추출합니다.")
-            
-            if st.button("선택한 보고서만 다운받기"):
-                if not target_reports:
-                    st.warning("⚠️ 보고서 종류를 최소 하나 이상 선택해주세요!")
-                else:
-                    with st.spinner("보고서 목록 조회 중..."):
-                        start_date = str(start_year) + "0101"
-                        end_date = str(end_year) + "1231"
-                        
-                        # 일단 전체 목록 가져오기
-                        report_list = dart.list(corp_name, start=start_date, end=end_date, kind='A')
+            # 진행 상황 표시
+            status_container = st.container()
+            with status_container:
+                with st.spinner(f"'{corp_name}' 데이터를 검색 중입니다..."):
+                    
+                    # 1. 목록 가져오기
+                    start_date = str(start_year) + "0101"
+                    end_date = str(end_year) + "1231"
+                    report_list = dart.list(corp_name, start=start_date, end=end_date, kind='A')
                     
                     if report_list is None or len(report_list) == 0:
-                        st.error("해당 기간에 조회된 보고서가 없습니다.")
+                        st.error(f"'{corp_name}'에 대한 보고서가 없습니다.")
                     else:
-                        # [핵심] 사용자가 선택한 종류만 남기기 (필터링)
-                        # contains 로직: "사업보고서"가 있으면 사업보고서만, "반기"가 있으면 반기만...
+                        # 필터링
                         filter_condition = report_list['report_nm'].str.contains('|'.join(target_reports))
                         filtered_list = report_list[filter_condition]
-                        
                         count = len(filtered_list)
                         
                         if count == 0:
-                            st.warning(f"검색 결과는 있지만, 선택하신 '{selected_str}'에 해당하는 보고서가 없습니다.")
+                            st.warning("검색 결과는 있지만, 선택한 종류의 보고서가 없습니다.")
                         else:
-                            st.write(f"총 {count}개의 보고서를 찾았습니다. (전체 {len(report_list)}개 중 필터링됨)")
+                            st.success(f"총 {count}개의 보고서를 찾았습니다!")
                             
-                            progress_bar = st.progress(0)
-                            status_text = st.empty()
-                            zip_buffer = io.BytesIO()
+                            # --- 탭으로 기능 분리 (깔끔하게) ---
+                            tab1, tab2 = st.tabs(["📑 본문 다운로드", "💰 재무제표 엑셀"])
                             
-                            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as master_zip:
-                                for i, row in filtered_list.iterrows():
-                                    rcept_no = row['rcept_no']
-                                    report_nm = clean_filename(row['report_nm'])
-                                    rcept_dt = row['rcept_dt']
+                            # [TAB 1] 본문 XML 다운로드
+                            with tab1:
+                                st.info("압축을 풀면 '본문 파일'만 나옵니다.")
+                                if st.button("XML 본문 받기"):
+                                    zip_buffer = io.BytesIO()
+                                    bar = st.progress(0)
                                     
-                                    status_text.text(f"[{i+1}/{count}] {report_nm} 본문 추출 중...")
+                                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as master_zip:
+                                        for i, row in filtered_list.iterrows():
+                                            rcept_no = row['rcept_no']
+                                            report_nm = clean_filename(row['report_nm'])
+                                            rcept_dt = row['rcept_dt']
+                                            
+                                            try:
+                                                url = f"https://opendart.fss.or.kr/api/document.xml?crtfc_key={api_key}&rcept_no={rcept_no}"
+                                                res = requests.get(url)
+                                                if res.status_code == 200:
+                                                    with zipfile.ZipFile(io.BytesIO(res.content)) as inner_zip:
+                                                        max_size = 0
+                                                        best_file_name = None
+                                                        for info in inner_zip.infolist():
+                                                            if info.filename.lower().endswith(('.xml', '.dsd', '.html', '.xhtml')):
+                                                                if info.file_size > max_size:
+                                                                    max_size = info.file_size
+                                                                    best_file_name = info.filename
+                                                        
+                                                        if best_file_name:
+                                                            source_data = inner_zip.read(best_file_name)
+                                                            ext = best_file_name.split('.')[-1]
+                                                            new_name = f"{rcept_dt}_{report_nm}.{ext}"
+                                                            master_zip.writestr(new_name, source_data)
+                                            except: pass
+                                            bar.progress((i + 1) / count)
+                                            
+                                    st.download_button(
+                                        label="📦 ZIP 파일 다운로드",
+                                        data=zip_buffer.getvalue(),
+                                        file_name=f"{corp_name}_본문모음.zip",
+                                        mime="application/zip"
+                                    )
+
+                            # [TAB 2] 재무제표 엑셀
+                            with tab2:
+                                st.info("선택한 기간의 재무제표를 통합합니다.")
+                                if st.button("재무제표 엑셀 받기"):
+                                    bar2 = st.progress(0)
+                                    all_financials = []
+                                    years = list(range(start_year, end_year + 1))
                                     
-                                    try:
-                                        url = f"https://opendart.fss.or.kr/api/document.xml?crtfc_key={api_key}&rcept_no={rcept_no}"
-                                        res = requests.get(url)
+                                    codes_to_fetch = []
+                                    if "사업보고서" in target_reports: codes_to_fetch.append(('11011', '사업보고서'))
+                                    if "반기보고서" in target_reports: codes_to_fetch.append(('11012', '반기보고서'))
+                                    if "분기보고서" in target_reports: 
+                                        codes_to_fetch.append(('11013', '1분기보고서'))
+                                        codes_to_fetch.append(('11014', '3분기보고서'))
+                                    
+                                    total_steps = len(years)
+                                    for i, year in enumerate(years):
+                                        for code, code_name in codes_to_fetch:
+                                            try:
+                                                fs = dart.finstate(corp_name, year, code)
+                                                if fs is not None:
+                                                    fs['귀속년도'] = year
+                                                    fs['보고서종류'] = code_name
+                                                    all_financials.append(fs)
+                                                time.sleep(0.1)
+                                            except: pass
+                                        bar2.progress((i + 1) / total_steps)
                                         
-                                        if res.status_code == 200:
-                                            with zipfile.ZipFile(io.BytesIO(res.content)) as inner_zip:
-                                                max_size = 0
-                                                best_file_name = None
-                                                
-                                                for info in inner_zip.infolist():
-                                                    if info.filename.lower().endswith(('.xml', '.dsd', '.html', '.xhtml')):
-                                                        if info.file_size > max_size:
-                                                            max_size = info.file_size
-                                                            best_file_name = info.filename
-                                                
-                                                if best_file_name:
-                                                    source_data = inner_zip.read(best_file_name)
-                                                    ext = best_file_name.split('.')[-1]
-                                                    new_name = f"{rcept_dt}_{report_nm}.{ext}"
-                                                    master_zip.writestr(new_name, source_data)
-                                    except:
-                                        pass
-                                    time.sleep(0.1)
-                                    progress_bar.progress((i + 1) / count)
-                            
-                            st.success("다운로드 준비 완료!")
-                            st.download_button(
-                                label="📦 선택 보고서 모음(ZIP)",
-                                data=zip_buffer.getvalue(),
-                                file_name=f"{corp_name}_{start_year}-{end_year}_선택보고서.zip",
-                                mime="application/zip"
-                            )
+                                    if all_financials:
+                                        merged_df = pd.concat(all_financials, ignore_index=True)
+                                        buffer_fs = io.BytesIO()
+                                        with pd.ExcelWriter(buffer_fs, engine='xlsxwriter') as writer:
+                                            merged_df.to_excel(writer, index=False, sheet_name='통합재무제표')
+                                        st.download_button(
+                                            label="📥 엑셀 다운로드",
+                                            data=buffer_fs,
+                                            file_name=f"{corp_name}_재무제표.xlsx",
+                                            mime="application/vnd.ms-excel"
+                                        )
+                                    else:
+                                        st.warning("데이터가 없습니다.")
 
-        # --- 기능 2: 재무제표 통합 엑셀 (필터 적용) ---
-        with col2:
-            st.subheader("💰 2. 재무제표 통합 엑셀")
-            st.info(f"선택하신 **[{selected_str}]**의 재무제표만 모아서 엑셀로 만듭니다.")
-            
-            if st.button("선택한 재무제표 수집 시작"):
-                if not target_reports:
-                    st.warning("⚠️ 보고서 종류를 최소 하나 이상 선택해주세요!")
-                else:
-                    progress_bar2 = st.progress(0)
-                    status_text2 = st.empty()
-                    
-                    all_financials = []
-                    years = list(range(start_year, end_year + 1))
-                    
-                    # [핵심] 사용자가 선택한 것만 코드 리스트에 담기
-                    codes_to_fetch = []
-                    if "사업보고서" in target_reports:
-                        codes_to_fetch.append(('11011', '사업보고서'))
-                    if "반기보고서" in target_reports:
-                        codes_to_fetch.append(('11012', '반기보고서'))
-                    if "분기보고서" in target_reports:
-                        codes_to_fetch.append(('11013', '1분기보고서'))
-                        codes_to_fetch.append(('11014', '3분기보고서'))
-                    
-                    total_steps = len(years)
+        except Exception as e:
+            st.error(f"오류가 발생했습니다: {e}")
 
-                    for i, year in enumerate(years):
-                        status_text2.text(f"{year}년도 데이터 수집 중...")
-                        progress_bar2.progress((i + 1) / total_steps)
-                        
-                        for code, code_name in codes_to_fetch:
-                            try:
-                                fs = dart.finstate(corp_name, year, code)
-                                if fs is not None:
-                                    fs['귀속년도'] = year
-                                    fs['보고서종류'] = code_name
-                                    all_financials.append(fs)
-                                time.sleep(0.2)
-                            except:
-                                pass
-
-                    if all_financials:
-                        merged_df = pd.concat(all_financials, ignore_index=True)
-                        st.success("수집 완료!")
-                        
-                        buffer_fs = io.BytesIO()
-                        with pd.ExcelWriter(buffer_fs, engine='xlsxwriter') as writer:
-                            merged_df.to_excel(writer, index=False, sheet_name='통합재무제표')
-                            
-                        st.download_button(
-                            label="📥 재무제표 엑셀 다운로드",
-                            data=buffer_fs,
-                            file_name=f"{corp_name}_{start_year}-{end_year}_선택재무제표.xlsx",
-                            mime="application/vnd.ms-excel"
-                        )
-                    else:
-                        st.warning("수집된 데이터가 없습니다. (해당 기간에 보고서가 없거나 API 제한일 수 있습니다)")
-
-    except Exception as e:
-        st.error(f"오류가 발생했습니다: {e}")
-
-elif not corp_name and api_key:
-    st.info("👈 왼쪽 사이드바에 '회사명'을 입력하면 분석 도구가 나타납니다.")
-else:
-    st.info("👈 API 키와 회사명을 입력해주세요.")
+# 첫 화면 안내 문구 (조회 전)
+if not submit_button:
+    st.info("👆 위 조건 입력 후 '조회 시작' 버튼을 눌러주세요.")
