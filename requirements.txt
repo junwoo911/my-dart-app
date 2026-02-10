@@ -5,4 +5,4 @@ openpyxl
 xlsxwriter
 requests
 finance-datareader
-yfinance            <-- 이거 꼭 추가!
+yfinance
