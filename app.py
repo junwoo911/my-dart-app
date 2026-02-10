@@ -7,11 +7,10 @@ import requests
 import zipfile
 import re
 import datetime
-import json
 
 # 1. 페이지 설정
 st.set_page_config(
-    page_title="DART 모바일 (안정판)",
+    page_title="DART 모바일",
     page_icon="📱",
     layout="centered",
     initial_sidebar_state="collapsed"
@@ -27,24 +26,21 @@ st.markdown("""
         font-weight: bold;
         font-size: 16px;
     }
-    /* 파란색 강조 버튼 */
-    .blue-button > button {
-        background-color: #007BFF !important;
-        color: white !important;
-    }
     div.block-container {
         padding-top: 1rem;
     }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("📱 DART 모바일 (안정판)")
+st.title("📱 DART 모바일 (파일명 패치)")
 
-# --- 기억 장치 ---
+# --- 기억 장치 초기화 ---
 if 'search_result' not in st.session_state:
     st.session_state.search_result = None
-if 'period_str' not in st.session_state:
-    st.session_state.period_str = ""
+if 'search_period' not in st.session_state:
+    st.session_state.search_period = ""
+if 'search_corp' not in st.session_state:
+    st.session_state.search_corp = ""
 
 # 2. API 키 설정
 api_key = None
@@ -70,7 +66,7 @@ with st.form(key='search_form'):
         default=["사업보고서", "반기보고서", "분기보고서"]
     )
     
-    # [변경] 여기서는 순수하게 '조회'만 합니다. (절대 안 멈춤)
+    # 1단계: 조회만 수행 (안정성 확보)
     submit_button = st.form_submit_button(label="🔍 1단계: 조회하기")
 
 def clean_filename(text):
@@ -101,31 +97,32 @@ if submit_button:
                         st.warning("선택한 보고서가 없습니다.")
                         st.session_state.search_result = None
                     else:
-                        # 결과 저장
+                        # [핵심] 결과와 파일명에 쓸 정보를 기억장치에 저장
                         st.session_state.search_result = filtered_list
-                        st.session_state.period_str = f"{start_year}-{end_year}"
+                        st.session_state.search_period = f"{start_year}-{end_year}"
+                        st.session_state.search_corp = corp_name # 회사명도 저장 (입력창 바꿔도 유지되게)
                         st.success(f"조회 성공! ({len(filtered_list)}건)")
 
         except Exception as e:
             st.error(f"에러 발생: {e}")
 
-
-# --- 2단계: 결과 및 다운로드 (조회된 경우에만 표시) ---
+# --- 2단계: 다운로드 화면 ---
 if st.session_state.search_result is not None:
     df = st.session_state.search_result
-    period_str = st.session_state.period_str
+    # 저장된 정보 불러오기
+    saved_period = st.session_state.search_period
+    saved_corp = st.session_state.search_corp
     
     st.divider()
-    st.subheader(f"📂 {corp_name} ({len(df)}건)")
+    st.subheader(f"📂 {saved_corp} ({len(df)}건)")
     
     tab1, tab2 = st.tabs(["🚀 XML 다운로드", "📊 재무제표"])
 
     # [TAB 1] XML 다운로드
     with tab1:
-        st.info("아래 버튼을 누르면 다운로드가 시작됩니다. (화면이 멈춘 게 아니니 기다려주세요!)")
+        st.info("버튼을 누르면 파일 생성이 시작됩니다.")
         
-        # [변경] 다운로드 버튼을 누르면 그때부터 생성 시작
-        if st.button("📥 2단계: XML 파일 생성 및 다운로드", key='xml_btn'):
+        if st.button("📥 2단계: XML 생성 및 다운로드", key='xml_btn'):
             zip_buffer = io.BytesIO()
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -142,7 +139,7 @@ if st.session_state.search_result is not None:
                     status_text.text(f"다운로드 중.. {report_nm}")
                     
                     try:
-                        # 타임아웃 10초 설정 (무한 대기 방지)
+                        # 타임아웃 설정으로 멈춤 방지
                         url = f"https://opendart.fss.or.kr/api/document.xml?crtfc_key={api_key}&rcept_no={rcept_no}"
                         res = requests.get(url, timeout=10)
                         
@@ -162,22 +159,24 @@ if st.session_state.search_result is not None:
                                     new_name = f"{rcept_dt}_{report_nm}.{ext}"
                                     master_zip.writestr(new_name, source_data)
                                     success_cnt += 1
-                    except Exception as e:
-                        print(f"Skip: {e}")
+                    except: pass
                     
                     time.sleep(0.1)
                     progress_bar.progress((i + 1) / count)
             
             if success_cnt > 0:
-                st.success("생성 완료! 버튼을 한번 더 눌러주세요 (Streamlit 특성)")
+                st.success("생성 완료! 버튼을 한 번 더 눌러주세요.")
+                # [핵심] 파일명 지정: 회사명_기간_보고서.zip
+                final_filename = f"{saved_corp}_{saved_period}_보고서.zip"
+                
                 st.download_button(
-                    label="💾 진짜 다운로드 (클릭)",
+                    label=f"💾 {final_filename} 다운로드",
                     data=zip_buffer.getvalue(),
-                    file_name=f"{corp_name}_{period_str}_보고서.zip",
+                    file_name=final_filename,
                     mime="application/zip"
                 )
             else:
-                st.error("파일을 하나도 못 받았습니다. (API 한도 확인 필요)")
+                st.error("파일 생성 실패 (API 한도 확인 필요)")
 
     # [TAB 2] 재무제표 엑셀
     with tab2:
@@ -191,7 +190,8 @@ if st.session_state.search_result is not None:
                 for idx, year in enumerate(years):
                     for code, name in codes_to_fetch:
                         try:
-                            fs = dart.finstate(corp_name, year, code)
+                            dart = OpenDartReader(api_key)
+                            fs = dart.finstate(saved_corp, year, code)
                             if fs is not None:
                                 fs['귀속년도']=year; fs['보고서']=name; all_financials.append(fs)
                             time.sleep(0.1)
@@ -203,10 +203,13 @@ if st.session_state.search_result is not None:
                     buf = io.BytesIO()
                     with pd.ExcelWriter(buf) as w: merged.to_excel(w, index=False)
                     
+                    # [핵심] 파일명 지정: 회사명_기간_재무제표.xlsx
+                    final_filename_xl = f"{saved_corp}_{saved_period}_재무제표.xlsx"
+                    
                     st.download_button(
-                        label="📥 엑셀 다운로드",
+                        label=f"📥 {final_filename_xl} 다운로드",
                         data=buf.getvalue(),
-                        file_name=f"{corp_name}_{period_str}_재무제표.xlsx",
+                        file_name=final_filename_xl,
                         mime="application/vnd.ms-excel"
                     )
                 else:
