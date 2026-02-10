@@ -7,4 +7,4 @@ requests
 finance-datareader
 yfinance
 lxml
-plotly
+beautifulsoup4
