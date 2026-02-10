@@ -18,10 +18,7 @@ if not api_key:
     st.error("⚠️ 메인 화면(Home)에서 API 키를 먼저 입력해주세요.")
     st.stop()
 
-# --- (이하 아까 만든 '안정판' 로직 그대로) ---
-# 기존 코드의 `st.set_page_config` 줄만 빼고 복사해 넣으시면 됩니다.
-# 편의를 위해 핵심 로직만 요약해 드립니다. (아까 코드 그대로 쓰시면 됩니다!)
-
+# --- 입력 폼 ---
 with st.form(key='search_form'):
     corp_name = st.text_input("회사명", placeholder="예: 삼성전자")
     col1, col2 = st.columns(2)
@@ -32,6 +29,7 @@ with st.form(key='search_form'):
 
 def clean_filename(text): return re.sub(r'[\\/*?:"<>|]', "_", text)
 
+# --- 조회 로직 ---
 if submit_button:
     try:
         dart = OpenDartReader(api_key)
@@ -53,6 +51,7 @@ if submit_button:
                 st.success(f"조회 성공! ({len(filtered_list)}건)")
     except Exception as e: st.error(f"에러: {e}")
 
+# --- 결과 및 다운로드 ---
 if 'search_result' in st.session_state and st.session_state.search_result is not None:
     df = st.session_state.search_result
     corp = st.session_state.search_corp
@@ -76,7 +75,7 @@ if 'search_result' in st.session_state and st.session_state.search_result is not
                         if not res.content.startswith(b'{'):
                             with zipfile.ZipFile(io.BytesIO(res.content)) as iz:
                                 for info in iz.infolist():
-                                    if info.filename.lower().endswith('.xml'): # 간단화
+                                    if info.filename.lower().endswith(('.xml', '.dsd')): 
                                         z.writestr(f"{row['rcept_dt']}_{clean_filename(row['report_nm'])}.xml", iz.read(info.filename))
                                         cnt+=1; break
                     except: pass
@@ -85,6 +84,26 @@ if 'search_result' in st.session_state and st.session_state.search_result is not
             else: st.error("실패")
 
     with tab2:
-        if st.button("📊 엑셀 변환"):
-            st.info("재무제표 로직은 동일합니다. (생략)")
-            # (이전 코드의 재무제표 로직 그대로 사용)
+        if st.button("📊 재무제표 엑셀 생성"):
+            dart = OpenDartReader(api_key)
+            all_financials = []
+            years = sorted(list(set(df['rcept_dt'].str[:4])))
+            codes = [('11011','사업'),('11012','반기'),('11013','1분기'),('11014','3분기')]
+            
+            prog = st.progress(0)
+            for idx, year in enumerate(years):
+                for code, name in codes:
+                    try:
+                        fs = dart.finstate(corp, year, code)
+                        if fs is not None:
+                            fs['귀속년도']=year; fs['보고서']=name; all_financials.append(fs)
+                        time.sleep(0.1)
+                    except: pass
+                prog.progress((idx+1)/len(years))
+            
+            if all_financials:
+                merged = pd.concat(all_financials)
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf) as w: merged.to_excel(w, index=False)
+                st.download_button("📥 엑셀 다운로드", buf.getvalue(), f"{corp}_{period}_재무제표.xlsx", "application/vnd.ms-excel")
+            else: st.warning("데이터 없음")
