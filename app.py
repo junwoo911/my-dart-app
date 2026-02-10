@@ -34,7 +34,7 @@ if api_key:
         if st.button("데이터 조회하기"):
             with st.spinner('DART 서버에서 데이터를 가져오는 중...'):
                 # 재무제표 가져오기
-                fs = dart.finstate(corp_name, year, report_code[0])
+                fs = dart.finstate(corp_name, int(year), report_code[0])
                 
                 if fs is None:
                     st.error("데이터를 찾을 수 없습니다. 회사명이나 연도를 확인해주세요.")
@@ -62,3 +62,4 @@ if api_key:
 else:
 
     st.info("👆 먼저 API Key를 입력해주세요.")
+
