@@ -4,4 +4,4 @@ pandas
 openpyxl
 xlsxwriter
 requests
-beautifulsoup4
+finance-datareader
