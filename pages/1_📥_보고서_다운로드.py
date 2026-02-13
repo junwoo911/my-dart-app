@@ -8,11 +8,16 @@ import datetime
 import requests
 from bs4 import BeautifulSoup
 
-# --- 페이지 설정 ---
-st.set_page_config(page_title="보고서 다운로드", page_icon="📥", layout="wide")
+# --- [핵심 수정] 페이지 설정: 사이드바를 기본적으로 '접음(collapsed)' 상태로 시작 ---
+st.set_page_config(
+    page_title="보고서 다운로드", 
+    page_icon="📥", 
+    layout="wide",
+    initial_sidebar_state="collapsed"  # 이 부분이 사이드바를 숨겨줍니다
+)
 
-# [수정 2] 앱 제목을 '보고서 다운로드'로 직관적으로 변경
-st.title("보고서 다운로드")
+# 제목
+st.title("📥 기업 보고서 즉시 다운로드")
 
 # --- 1. API 키 설정 ---
 if 'api_key' not in st.session_state:
@@ -58,55 +63,48 @@ def extract_ai_friendly_text(html_content):
     text = soup.get_text(separator="\n")
     return re.sub(r'\n\s*\n+', '\n\n', text).strip()
 
-# --- [수정 2 관련] 사이드바 제거하고 메인 화면에 검색창 배치 ---
-# 폴드폰에서 사이드바를 열지 않아도 바로 검색할 수 있습니다.
-
+# --- 메인 검색 화면 구성 (사이드바 아님) ---
+# 컨테이너로 감싸서 시각적으로 깔끔하게 정리
 with st.container(border=True):
-    st.subheader("🔍 검색 설정")
+    col_input, col_btn = st.columns([4, 1])
     
-    # 1행: 회사명 입력
-    corp_name = st.text_input("회사명", value="", placeholder="예: 파라다이스")
+    with col_input:
+        # [편의성] 엔터 치면 바로 검색되도록 form 사용 가능하지만, 
+        # 직관성을 위해 바로 입력창 배치
+        corp_name = st.text_input("회사명 입력", placeholder="예: 삼성전자", label_visibility="collapsed")
     
-    # 2행: 연도 선택 (가로로 배치)
-    col1, col2 = st.columns(2)
-    with col1:
-        start_year = st.number_input("시작 연도", min_value=1990, max_value=2030, value=2024, step=1)
-    with col2:
-        end_year = st.number_input("종료 연도", min_value=1990, max_value=2030, value=2025, step=1)
-    
-    # 3행: 보고서 종류
-    report_options = ["1분기보고서", "반기보고서", "3분기보고서", "사업보고서"]
-    selected_types = st.multiselect("보고서 종류 선택", report_options, default=["사업보고서"])
-    
-    # 검색 버튼
-    if st.button("목록 조회", type="primary", use_container_width=True):
-        st.session_state.search_trigger = True
-    else:
-        # 버튼을 누르지 않았을 때도 결과가 유지되도록 처리 (Streamlit 특성)
-        if 'search_trigger' not in st.session_state:
-            st.session_state.search_trigger = False
+    with col_btn:
+        btn_search = st.button("검색", type="primary", use_container_width=True)
 
-# --- 메인 로직 ---
-if st.session_state.search_trigger:
-    if not corp_name:
-        st.warning("회사명을 입력해주세요.")
-    else:
+    # 상세 옵션 (기본적으로는 접어두거나, 한 줄에 배치하여 공간 절약)
+    with st.expander("📅 기간 및 보고서 종류 설정 (필요시 클릭)", expanded=True):
+        opt_col1, opt_col2, opt_col3 = st.columns([1, 1, 2])
+        
+        with opt_col1:
+            start_year = st.number_input("시작 연도", min_value=1990, max_value=2030, value=2024, step=1)
+        with opt_col2:
+            end_year = st.number_input("종료 연도", min_value=1990, max_value=2030, value=2025, step=1)
+        with opt_col3:
+            report_options = ["1분기보고서", "반기보고서", "3분기보고서", "사업보고서"]
+            selected_types = st.multiselect("종류", report_options, default=["사업보고서"], label_visibility="collapsed", placeholder="보고서 종류 선택")
+
+# --- 검색 로직 처리 ---
+# 버튼을 누르거나, 이전에 검색한 기록이 있으면 실행
+if btn_search or ('target_df' in st.session_state and st.session_state.target_df is not None):
+    # 버튼이 눌렸을 때만 새로운 검색 시도
+    if btn_search:
+        if not corp_name:
+            st.warning("회사명을 입력해주세요.")
+            st.stop()
+            
         start_date = f"{start_year}0101"
         end_date = f"{end_year}1231"
         
-        # 중복 호출 방지를 위해 결과가 없거나 검색 조건이 바뀌었을 때만 로딩 표시
-        if 'target_df' not in st.session_state or st.session_state.target_df is None:
-             spinner_text = f"📡 '{corp_name}'의 공시를 조회 중..."
-        else:
-             spinner_text = "결과를 갱신 중..."
-
-        with st.spinner(spinner_text):
+        with st.spinner(f"🔎 '{corp_name}' 공시 찾는 중..."):
             try:
                 df = fetch_report_list_clean(corp_name, start_date, end_date)
                 
                 if df is not None and len(df) > 0:
-                    
-                    # 1분기/3분기 정밀 필터링 로직
                     conditions = []
                     if "사업보고서" in selected_types:
                         conditions.append(df['report_nm'].str.contains("사업보고서"))
@@ -128,73 +126,72 @@ if st.session_state.search_trigger:
                         filtered_df = pd.DataFrame()
 
                     st.session_state.target_df = filtered_df
+                    st.session_state.current_corp = corp_name # 현재 검색한 회사명 저장
                     
-                    if len(filtered_df) == 0:
-                         st.warning("조건에 맞는 보고서가 없습니다.")
                 else:
-                    st.error("해당 기간에 검색된 보고서가 없습니다.")
+                    st.error("검색된 결과가 없습니다.")
                     st.session_state.target_df = None
             except Exception as e:
-                st.error(f"오류 발생: {e}")
+                st.error(f"오류: {e}")
 
-# --- 다운로드 섹션 ---
+# --- 결과 및 다운로드 섹션 ---
 if 'target_df' in st.session_state and st.session_state.target_df is not None:
     df = st.session_state.target_df
+    corp_name_fixed = st.session_state.get('current_corp', corp_name) # 저장된 회사명 사용
     
-    st.write(f"✅ **총 {len(df)}건 검색됨**")
-    st.dataframe(df[['rcept_dt', 'corp_name', 'report_nm']], use_container_width=True, hide_index=True)
+    st.divider()
+    st.subheader(f"✅ 검색 결과 ({len(df)}건)")
     
-    if st.button("🚀 선택된 보고서 개별 추출 시작", use_container_width=True):
-        
-        zip_buffer = io.BytesIO()
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        total = len(df)
-        
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-            for idx, row in df.iterrows():
-                report_name = row['report_nm']
-                
-                # [수정 1] 파일명 생성: 뒤에 붙던 (접수일) 제거
-                # DART 보고서 이름 자체에 이미 (2025.09) 등이 포함되어 있으므로 그대로 사용
-                file_name = f"{corp_name}_{report_name}.txt"
-                
-                # 파일명 특수문자 제거
-                file_name = re.sub(r'[\\/*?:"<>|]', "", file_name)
+    # 데이터프레임 표시
+    st.dataframe(df[['rcept_dt', 'report_nm']], use_container_width=True, hide_index=True)
+    
+    if len(df) > 0:
+        if st.button("🚀 전체 다운로드 (ZIP 파일 생성)", type="primary", use_container_width=True):
+            
+            zip_buffer = io.BytesIO()
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            total = len(df)
+            
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                for idx, row in df.iterrows():
+                    report_name = row['report_nm']
+                    file_name = f"{corp_name_fixed}_{report_name}.txt"
+                    file_name = re.sub(r'[\\/*?:"<>|]', "", file_name)
 
-                status_text.info(f"⏳ ({idx+1}/{total}) {file_name} 생성 중...")
-                
-                try:
-                    url = f"https://opendart.fss.or.kr/api/document.xml?crtfc_key={api_key}&rcept_no={row['rcept_no']}"
-                    res = requests.get(url, timeout=10)
+                    status_text.info(f"⏳ ({idx+1}/{total}) {file_name} 추출 중...")
                     
-                    with zipfile.ZipFile(io.BytesIO(res.content)) as z_orig:
-                        target_file = max(z_orig.infolist(), key=lambda f: f.file_size).filename
-                        raw_data = z_orig.read(target_file)
-                        try: content_html = raw_data.decode('utf-8')
-                        except: content_html = raw_data.decode('euc-kr', 'ignore')
+                    try:
+                        url = f"https://opendart.fss.or.kr/api/document.xml?crtfc_key={api_key}&rcept_no={row['rcept_no']}"
+                        res = requests.get(url, timeout=10)
                         
-                        clean_text = extract_ai_friendly_text(content_html)
-                        
-                        final_content = f"### {corp_name} {report_name} ###\n"
-                        # 문서 내부에만 참고용으로 접수일 기록 (파일명에는 안 씀)
-                        final_content += f"접수일: {row['rcept_dt']}\n\n"
-                        final_content += clean_text
-                        
-                        zip_file.writestr(file_name, final_content)
-                        
-                except Exception as e:
-                    st.error(f"{file_name} 처리 중 오류: {e}")
-                
-                progress_bar.progress((idx + 1) / total)
+                        with zipfile.ZipFile(io.BytesIO(res.content)) as z_orig:
+                            target_file = max(z_orig.infolist(), key=lambda f: f.file_size).filename
+                            raw_data = z_orig.read(target_file)
+                            try: content_html = raw_data.decode('utf-8')
+                            except: content_html = raw_data.decode('euc-kr', 'ignore')
+                            
+                            clean_text = extract_ai_friendly_text(content_html)
+                            
+                            final_content = f"### {corp_name_fixed} {report_name} ###\n"
+                            final_content += f"접수일: {row['rcept_dt']}\n\n"
+                            final_content += clean_text
+                            
+                            zip_file.writestr(file_name, final_content)
+                            
+                    except Exception as e:
+                        st.error(f"실패: {file_name} - {e}")
+                    
+                    progress_bar.progress((idx + 1) / total)
 
-        status_text.success("🎉 변환 완료! 아래 버튼을 눌러주세요.")
-        
-        st.download_button(
-            label="💾 보고서 모음 다운로드 (ZIP)",
-            data=zip_buffer.getvalue(),
-            file_name=f"{corp_name}_Reports.zip",
-            mime="application/zip",
-            type="primary",
-            use_container_width=True
-        )
+            status_text.success("완료! 버튼을 눌러 저장하세요.")
+            
+            # 최종 다운로드 버튼
+            st.download_button(
+                label="💾 ZIP 파일 저장하기",
+                data=zip_buffer.getvalue(),
+                file_name=f"{corp_name_fixed}_Reports.zip",
+                mime="application/zip",
+                type="primary",
+                use_container_width=True
+            )
