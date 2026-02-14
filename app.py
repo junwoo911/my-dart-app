@@ -155,7 +155,7 @@ def extract_ai_friendly_text(html_content):
 with st.container(border=True):
     col_input, col_btn = st.columns([4, 1])
     with col_input:
-        corp_name = st.text_input("회사명 입력", placeholder="예: 삼성전자", label_visibility="collapsed")
+        corp_name = st.text_input("회사명 입력", placeholder="예: 파라다이스, 삼성전자", label_visibility="collapsed")
     with col_btn:
         btn_search = st.button("검색", type="primary", use_container_width=True)
 
