@@ -130,7 +130,6 @@ with st.container(border=True):
     with col_input:
         corp_name = st.text_input("회사명 입력", placeholder="예: 삼성전자", label_visibility="collapsed")
     with col_btn:
-        # [수정] 버튼 이름을 심플하게 '검색'으로 변경
         btn_start = st.button("검색", type="primary", use_container_width=True)
 
     with st.expander("📅 설정", expanded=True):
@@ -171,7 +170,7 @@ if btn_start:
                         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
                             for i, (idx, row) in enumerate(df.iterrows()):
                                 
-                                # [파일명] DART 원본 제목 유지 (특수문자만 제거)
+                                # DART 원본 제목 유지
                                 rpt_name = row['report_nm']
                                 fname = re.sub(r'[\\/*?:"<>|]', "", f"{corp_name}_{rpt_name}.txt")
                                 
@@ -195,11 +194,28 @@ if btn_start:
                         
                         status.update(label="🎉 생성 완료! 아래 버튼을 누르세요.", state="complete", expanded=False)
                     
-                    # [압축파일명] '보고서_모음.zip'으로 깔끔하게
+                    # --- [핵심] ZIP 파일명 동적 생성 로직 ---
+                    # 1. 연도 문자열 생성
+                    if start_year == end_year:
+                        year_str = f"{start_year}"
+                    else:
+                        year_str = f"{start_year}-{end_year}"
+                    
+                    # 2. 보고서 종류 문자열 생성
+                    if len(selected_types) == 1:
+                        type_str = selected_types[0] # 예: 사업보고서
+                    elif len(selected_types) <= 2:
+                        type_str = "+".join(selected_types) # 예: 1분기보고서+3분기보고서
+                    else:
+                        type_str = "다종보고서" # 너무 길면 줄임
+
+                    # 3. 최종 ZIP 파일명 조합
+                    final_zip_name = f"{corp_name}_{year_str}_{type_str}_모음.zip"
+
                     st.download_button(
-                        label="💾 보고서 모음(ZIP) 저장",
+                        label=f"💾 {final_zip_name} 저장", # 버튼에도 이름 표시
                         data=zip_buffer.getvalue(),
-                        file_name=f"{corp_name}_보고서_모음.zip",
+                        file_name=final_zip_name,
                         mime="application/zip",
                         type="primary",
                         use_container_width=True
