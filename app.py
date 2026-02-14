@@ -123,7 +123,7 @@ def extract_ai_friendly_text(html_content):
 with st.container(border=True):
     col_input, col_btn = st.columns([4, 1])
     with col_input:
-        corp_name = st.text_input("회사명 입력", placeholder="예: GKL, 삼성전자", label_visibility="collapsed")
+        corp_name = st.text_input("회사명 입력", placeholder="예: 삼성전자", label_visibility="collapsed")
     with col_btn:
         btn_search = st.button("검색", type="primary", use_container_width=True)
 
@@ -225,3 +225,4 @@ if btn_search or ('target_df' in st.session_state and st.session_state.target_df
                 
                 status.success("완료!")
                 st.download_button("💾 파일 저장", zip_buffer.getvalue(), f"{corp_name_fixed}_Final.zip", "application/zip")
+
