@@ -16,7 +16,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-st.title("📥 기업 보고서 즉시 다운로드 (Direct Mode)")
+st.title("📥 기업 보고서 즉시 다운로드 (Final Ver.)")
 
 # --- 1. API 키 설정 ---
 if 'api_key' not in st.session_state:
@@ -28,12 +28,9 @@ if 'api_key' not in st.session_state:
 
 api_key = st.session_state.api_key
 
-# --- 2. [핵심] DART 직접 접속 함수 (라이브러리 미사용) ---
-# 라이브러리를 거치지 않고 직접 브라우저인 척 통신합니다.
+# --- 2. DART 직접 접속 함수 ---
 @st.cache_data(ttl=600)
 def fetch_report_list_direct(corp_name, start_date, end_date):
-    # 1. 고유번호(corp_code)를 알아내기 위해 OpenDartReader를 잠시 씁니다.
-    # (이건 XML 파일을 받아오는 거라 차단이 덜합니다)
     try:
         dart = OpenDartReader(api_key)
         corp_code = dart.find_corp_code(corp_name)
@@ -42,18 +39,16 @@ def fetch_report_list_direct(corp_name, start_date, end_date):
     except:
         return None
 
-    # 2. 실제 공시 목록 요청 (여기가 차단되는 구간입니다)
     url = "https://opendart.fss.or.kr/api/list.json"
     params = {
         'crtfc_key': api_key,
         'corp_code': corp_code,
         'bgn_de': start_date,
         'end_de': end_date,
-        'pblntf_detail_ty': 'A001', # A001: 정기공시 (사업,반기,분기)
+        'pblntf_detail_ty': 'A001', # 정기공시
         'page_count': 100
     }
     
-    # 강력한 위장 헤더
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Referer': 'https://dart.fss.or.kr/',
@@ -62,7 +57,6 @@ def fetch_report_list_direct(corp_name, start_date, end_date):
     }
 
     try:
-        # 타임아웃 10초 설정 (무한 로딩 방지)
         resp = requests.get(url, params=params, headers=headers, timeout=10)
         data = resp.json()
         
@@ -72,8 +66,38 @@ def fetch_report_list_direct(corp_name, start_date, end_date):
         else:
             return None
     except Exception as e:
-        # 에러 내용을 반환해서 화면에 찍어줍니다
         raise Exception(f"접속 실패: {str(e)}")
+
+# --- [추가된 기능] 최종본만 필터링하는 함수 ---
+def filter_final_version(df):
+    if df is None or len(df) == 0:
+        return df
+        
+    # 1. 날짜 기준 내림차순 정렬 (최신 날짜가 위로 오게)
+    df = df.sort_values(by='rcept_dt', ascending=False)
+    
+    # 2. 보고서 제목에서 '(2024.12)' 같은 기간 식별자 추출
+    # 정규식 설명: 괄호 안에 숫자4개.숫자2개 패턴을 찾음
+    df['period_id'] = df['report_nm'].str.extract(r'\((\d{4}\.\d{2})\)')
+    
+    # 3. 보고서 종류(사업/반기/분기) 식별
+    def get_type(nm):
+        if "사업보고서" in nm: return "사업"
+        if "반기보고서" in nm: return "반기"
+        if "분기보고서" in nm: return "분기"
+        return "기타"
+    
+    df['report_type'] = df['report_nm'].apply(get_type)
+    
+    # 4. '기간'과 '종류'가 없는 행(정기공시 아닌 것)은 제외
+    df = df.dropna(subset=['period_id'])
+    
+    # 5. [핵심] 같은 종류(사업/분기) + 같은 기간(2024.12)이면 -> 가장 위의 것(최신)만 남기고 중복 제거
+    # keep='first' 옵션이 정렬된 상태에서 맨 위의 것(최종본)만 살립니다.
+    df_clean = df.drop_duplicates(subset=['report_type', 'period_id'], keep='first')
+    
+    # 6. 임시 컬럼 삭제 및 인덱스 초기화
+    return df_clean.drop(columns=['period_id', 'report_type']).reset_index(drop=True)
 
 # --- 3. 텍스트 변환 함수 ---
 def extract_ai_friendly_text(html_content):
@@ -99,14 +123,14 @@ def extract_ai_friendly_text(html_content):
 with st.container(border=True):
     col_input, col_btn = st.columns([4, 1])
     with col_input:
-        corp_name = st.text_input("회사명 입력", placeholder="예: 삼성전자", label_visibility="collapsed")
+        corp_name = st.text_input("회사명 입력", placeholder="예: GKL, 삼성전자", label_visibility="collapsed")
     with col_btn:
         btn_search = st.button("검색", type="primary", use_container_width=True)
 
     with st.expander("📅 설정", expanded=True):
         col1, col2, col3 = st.columns([1, 1, 2])
         with col1:
-            start_year = st.number_input("시작", 2000, 2030, 2024)
+            start_year = st.number_input("시작", 2000, 2030, 2021)
         with col2:
             end_year = st.number_input("종료", 2000, 2030, 2025)
         with col3:
@@ -123,14 +147,13 @@ if btn_search or ('target_df' in st.session_state and st.session_state.target_df
         start_date = f"{start_year}0101"
         end_date = f"{end_year}1231"
         
-        with st.spinner(f"🚀 '{corp_name}' DART 서버 뚫는 중... (10초 타임아웃)"):
+        with st.spinner(f"🚀 '{corp_name}' 최종 보고서 선별 중..."):
             try:
-                # 직접 만든 함수 호출
                 df = fetch_report_list_direct(corp_name, start_date, end_date)
                 
                 if df is not None and len(df) > 0:
+                    # 1차: 사용자가 선택한 보고서 종류 필터링
                     conditions = []
-                    # 필터링 로직
                     if "사업보고서" in selected_types: conditions.append(df['report_nm'].str.contains("사업보고서"))
                     if "반기보고서" in selected_types: conditions.append(df['report_nm'].str.contains("반기보고서"))
                     if "1분기보고서" in selected_types: conditions.append(df['report_nm'].str.contains(r"분기보고서.*[30]3월|[1]분기"))
@@ -138,18 +161,21 @@ if btn_search or ('target_df' in st.session_state and st.session_state.target_df
 
                     if conditions:
                         final_mask = pd.concat(conditions, axis=1).any(axis=1)
-                        filtered_df = df[final_mask].copy().reset_index(drop=True)
+                        filtered_df = df[final_mask].copy()
+                        
+                        # [핵심] 여기서 최종본 필터링 함수 실행!
+                        clean_df = filter_final_version(filtered_df)
+                        
+                        st.session_state.target_df = clean_df
+                        st.session_state.current_corp = corp_name
                     else:
-                        filtered_df = pd.DataFrame()
-
-                    st.session_state.target_df = filtered_df
-                    st.session_state.current_corp = corp_name
+                        st.warning("선택한 종류의 보고서가 없습니다.")
+                        st.session_state.target_df = None
                 else:
                     st.error("❌ 검색 결과가 없거나 차단되었습니다.")
                     st.session_state.target_df = None
             except Exception as e:
                 st.error(f"⚠️ 연결 오류: {e}")
-                st.caption("DART 서버가 해외(Streamlit) 접속을 차단했을 가능성이 높습니다.")
 
     # 결과 및 다운로드
     if 'target_df' in st.session_state and st.session_state.target_df is not None:
@@ -157,7 +183,8 @@ if btn_search or ('target_df' in st.session_state and st.session_state.target_df
         corp_name_fixed = st.session_state.get('current_corp', corp_name)
         
         st.divider()
-        st.subheader(f"✅ 검색 결과 ({len(df)}건)")
+        st.subheader(f"✅ 최종본 검색 결과 ({len(df)}건)")
+        # 표 보여주기
         st.dataframe(df[['rcept_dt', 'report_nm']], use_container_width=True, hide_index=True)
         
         if len(df) > 0:
@@ -172,10 +199,12 @@ if btn_search or ('target_df' in st.session_state and st.session_state.target_df
 
                 with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
                     for i, row in df.iterrows():
-                        fname = re.sub(r'[\\/*?:"<>|]', "", f"{corp_name_fixed}_{row['report_nm']}.txt")
+                        # 파일명 정리 (기재정정 등 텍스트는 파일명에는 포함하되, 날짜 중복 제거)
+                        rpt_name = row['report_nm']
+                        fname = re.sub(r'[\\/*?:"<>|]', "", f"{corp_name_fixed}_{rpt_name}.txt")
+                        
                         status.info(f"다운로드 중: {fname}")
                         try:
-                            # 다운로드도 requests 직접 사용
                             d_url = f"https://opendart.fss.or.kr/api/document.xml?crtfc_key={api_key}&rcept_no={row['rcept_no']}"
                             res = requests.get(d_url, headers=headers_download, timeout=15)
                             
@@ -183,10 +212,16 @@ if btn_search or ('target_df' in st.session_state and st.session_state.target_df
                                 t_file = max(z.infolist(), key=lambda f: f.file_size).filename
                                 content = z.read(t_file).decode('utf-8', 'ignore')
                                 final_txt = extract_ai_friendly_text(content)
-                                zip_file.writestr(fname, final_txt)
+                                
+                                # 텍스트 파일 내부에 정보 기록
+                                header_info = f"### {corp_name_fixed} {rpt_name} (최종본) ###\n"
+                                header_info += f"접수일: {row['rcept_dt']}\n"
+                                header_info += f"비고: {row.get('rm', '')}\n\n" # 기재정정 여부 등
+                                
+                                zip_file.writestr(fname, header_info + final_txt)
                         except:
                             pass
                         progress.progress((i+1)/len(df))
                 
                 status.success("완료!")
-                st.download_button("💾 파일 저장", zip_buffer.getvalue(), f"{corp_name_fixed}.zip", "application/zip")
+                st.download_button("💾 파일 저장", zip_buffer.getvalue(), f"{corp_name_fixed}_Final.zip", "application/zip")
