@@ -5,11 +5,10 @@ import io
 import zipfile
 import re
 import requests
+import json
 from bs4 import BeautifulSoup
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
-# --- [필수] 사이드바 접기 설정 ---
+# --- 페이지 설정 ---
 st.set_page_config(
     page_title="보고서 다운로드", 
     page_icon="📥", 
@@ -17,19 +16,9 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- [핵심 패치] DART 서버 접속 뚫기 (User-Agent 위장) ---
-# 이 부분이 없으면 해외 서버에서 접속 시 무한 로딩이 걸립니다.
-def patch_request_headers():
-    default_headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Accept': '*/*',
-        'Connection': 'keep-alive'
-    }
-    return default_headers
+st.title("📥 기업 보고서 즉시 다운로드 (Direct Mode)")
 
 # --- 1. API 키 설정 ---
-st.title("📥 기업 보고서 즉시 다운로드")
-
 if 'api_key' not in st.session_state:
     if "dart_api_key" in st.secrets:
         st.session_state.api_key = st.secrets["dart_api_key"]
@@ -39,32 +28,54 @@ if 'api_key' not in st.session_state:
 
 api_key = st.session_state.api_key
 
-# --- 2. DART 객체 생성 (안전장치 추가) ---
-@st.cache_resource
-def get_dart_system(key):
-    # DART 객체 생성 시에는 별도 헤더 설정이 어려우므로, 
-    # 첫 실행 시 데이터 다운로드를 위해 안내 메시지를 띄웁니다.
-    return OpenDartReader(key)
-
-# --- 3. 보고서 목록 조회 (강제 타임아웃 및 재시도 적용) ---
-@st.cache_data(ttl=3600)
-def fetch_report_list_safe(corp_name, start_date, end_date):
-    # 1. OpenDartReader 인스턴스 가져오기
-    dart = get_dart_system(api_key)
-    
-    # 2. 직접 코드를 찾아서 요청 (라이브러리 내부 로직이 멈출 수 있어서 우회)
-    # GKL 같은 영문명이나 사명 검색을 위해 라이브러리 기능 시도
+# --- 2. [핵심] DART 직접 접속 함수 (라이브러리 미사용) ---
+# 라이브러리를 거치지 않고 직접 브라우저인 척 통신합니다.
+@st.cache_data(ttl=600)
+def fetch_report_list_direct(corp_name, start_date, end_date):
+    # 1. 고유번호(corp_code)를 알아내기 위해 OpenDartReader를 잠시 씁니다.
+    # (이건 XML 파일을 받아오는 거라 차단이 덜합니다)
     try:
-        # User-Agent 강제 적용을 위해 requests 라이브러리 전역 설정 업데이트
-        requests.utils.default_headers().update(patch_request_headers())
-        
-        # 목록 가져오기
-        return dart.list(corp_name, start=start_date, end=end_date, kind='A')
-    except Exception as e:
-        # 혹시 라이브러리가 멈추면 에러를 반환
+        dart = OpenDartReader(api_key)
+        corp_code = dart.find_corp_code(corp_name)
+        if not corp_code:
+            return None
+    except:
         return None
 
-# --- 4. 텍스트 변환 함수 ---
+    # 2. 실제 공시 목록 요청 (여기가 차단되는 구간입니다)
+    url = "https://opendart.fss.or.kr/api/list.json"
+    params = {
+        'crtfc_key': api_key,
+        'corp_code': corp_code,
+        'bgn_de': start_date,
+        'end_de': end_date,
+        'pblntf_detail_ty': 'A001', # A001: 정기공시 (사업,반기,분기)
+        'page_count': 100
+    }
+    
+    # 강력한 위장 헤더
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://dart.fss.or.kr/',
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'Connection': 'keep-alive'
+    }
+
+    try:
+        # 타임아웃 10초 설정 (무한 로딩 방지)
+        resp = requests.get(url, params=params, headers=headers, timeout=10)
+        data = resp.json()
+        
+        if data.get('status') == '000':
+            df = pd.DataFrame(data['list'])
+            return df
+        else:
+            return None
+    except Exception as e:
+        # 에러 내용을 반환해서 화면에 찍어줍니다
+        raise Exception(f"접속 실패: {str(e)}")
+
+# --- 3. 텍스트 변환 함수 ---
 def extract_ai_friendly_text(html_content):
     soup = BeautifulSoup(html_content, "html.parser")
     for s in soup(["script", "style", "head", "svg", "img"]):
@@ -84,7 +95,7 @@ def extract_ai_friendly_text(html_content):
     text = soup.get_text(separator="\n")
     return re.sub(r'\n\s*\n+', '\n\n', text).strip()
 
-# --- 5. UI 구성 ---
+# --- 4. UI 구성 ---
 with st.container(border=True):
     col_input, col_btn = st.columns([4, 1])
     with col_input:
@@ -92,17 +103,17 @@ with st.container(border=True):
     with col_btn:
         btn_search = st.button("검색", type="primary", use_container_width=True)
 
-    with st.expander("📅 기간 및 보고서 종류 (기본값: 최근 1년, 사업보고서)", expanded=True):
-        opt_col1, opt_col2, opt_col3 = st.columns([1, 1, 2])
-        with opt_col1:
-            start_year = st.number_input("시작 연도", min_value=1990, max_value=2030, value=2024, step=1)
-        with opt_col2:
-            end_year = st.number_input("종료 연도", min_value=1990, max_value=2030, value=2025, step=1)
-        with opt_col3:
+    with st.expander("📅 설정", expanded=True):
+        col1, col2, col3 = st.columns([1, 1, 2])
+        with col1:
+            start_year = st.number_input("시작", 2000, 2030, 2024)
+        with col2:
+            end_year = st.number_input("종료", 2000, 2030, 2025)
+        with col3:
             report_options = ["1분기보고서", "반기보고서", "3분기보고서", "사업보고서"]
-            selected_types = st.multiselect("종류", report_options, default=["사업보고서"], label_visibility="collapsed")
+            selected_types = st.multiselect("종류", report_options, default=["사업보고서"])
 
-# --- 6. 실행 로직 ---
+# --- 5. 실행 로직 ---
 if btn_search or ('target_df' in st.session_state and st.session_state.target_df is not None):
     if btn_search:
         if not corp_name:
@@ -112,20 +123,18 @@ if btn_search or ('target_df' in st.session_state and st.session_state.target_df
         start_date = f"{start_year}0101"
         end_date = f"{end_year}1231"
         
-        # 스피너에 메시지 구체화
-        with st.spinner(f"📡 '{corp_name}' 접속 시도 중... (첫 검색은 20~30초 걸릴 수 있습니다)"):
+        with st.spinner(f"🚀 '{corp_name}' DART 서버 뚫는 중... (10초 타임아웃)"):
             try:
-                # 타임아웃 걸린 요청 실행
-                df = fetch_report_list_safe(corp_name, start_date, end_date)
+                # 직접 만든 함수 호출
+                df = fetch_report_list_direct(corp_name, start_date, end_date)
                 
                 if df is not None and len(df) > 0:
                     conditions = []
+                    # 필터링 로직
                     if "사업보고서" in selected_types: conditions.append(df['report_nm'].str.contains("사업보고서"))
                     if "반기보고서" in selected_types: conditions.append(df['report_nm'].str.contains("반기보고서"))
-                    if "1분기보고서" in selected_types:
-                        conditions.append((df['report_nm'].str.contains("분기보고서")) & (df['report_nm'].str.contains(r"\.03|\.3월", regex=True)))
-                    if "3분기보고서" in selected_types:
-                        conditions.append((df['report_nm'].str.contains("분기보고서")) & (df['report_nm'].str.contains(r"\.09|\.9월", regex=True)))
+                    if "1분기보고서" in selected_types: conditions.append(df['report_nm'].str.contains(r"분기보고서.*[30]3월|[1]분기"))
+                    if "3분기보고서" in selected_types: conditions.append(df['report_nm'].str.contains(r"분기보고서.*[0]9월|[3]분기"))
 
                     if conditions:
                         final_mask = pd.concat(conditions, axis=1).any(axis=1)
@@ -136,12 +145,13 @@ if btn_search or ('target_df' in st.session_state and st.session_state.target_df
                     st.session_state.target_df = filtered_df
                     st.session_state.current_corp = corp_name
                 else:
-                    st.error("❌ 검색 결과가 없거나 DART 서버 응답이 지연되고 있습니다.")
+                    st.error("❌ 검색 결과가 없거나 차단되었습니다.")
                     st.session_state.target_df = None
             except Exception as e:
-                st.error(f"오류 발생: {e}")
+                st.error(f"⚠️ 연결 오류: {e}")
+                st.caption("DART 서버가 해외(Streamlit) 접속을 차단했을 가능성이 높습니다.")
 
-    # 결과 표시 및 다운로드
+    # 결과 및 다운로드
     if 'target_df' in st.session_state and st.session_state.target_df is not None:
         df = st.session_state.target_df
         corp_name_fixed = st.session_state.get('current_corp', corp_name)
@@ -151,46 +161,32 @@ if btn_search or ('target_df' in st.session_state and st.session_state.target_df
         st.dataframe(df[['rcept_dt', 'report_nm']], use_container_width=True, hide_index=True)
         
         if len(df) > 0:
-            if st.button("🚀 전체 다운로드 (ZIP)", type="primary", use_container_width=True):
+            if st.button("ZIP 다운로드 생성", type="primary"):
                 zip_buffer = io.BytesIO()
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                total = len(df)
+                progress = st.progress(0)
+                status = st.empty()
                 
+                headers_download = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                }
+
                 with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                    for idx, row in df.iterrows():
-                        report_name = row['report_nm']
-                        file_name = f"{corp_name_fixed}_{report_name}.txt"
-                        file_name = re.sub(r'[\\/*?:"<>|]', "", file_name)
-                        
-                        status_text.info(f"⏳ ({idx+1}/{total}) {file_name} 추출 중...")
-                        
+                    for i, row in df.iterrows():
+                        fname = re.sub(r'[\\/*?:"<>|]', "", f"{corp_name_fixed}_{row['report_nm']}.txt")
+                        status.info(f"다운로드 중: {fname}")
                         try:
-                            # 개별 파일 다운로드 시에도 헤더 적용
-                            url = f"https://opendart.fss.or.kr/api/document.xml?crtfc_key={api_key}&rcept_no={row['rcept_no']}"
-                            # requests.get 사용 시 headers 추가
-                            res = requests.get(url, timeout=15, headers=patch_request_headers())
+                            # 다운로드도 requests 직접 사용
+                            d_url = f"https://opendart.fss.or.kr/api/document.xml?crtfc_key={api_key}&rcept_no={row['rcept_no']}"
+                            res = requests.get(d_url, headers=headers_download, timeout=15)
                             
-                            with zipfile.ZipFile(io.BytesIO(res.content)) as z_orig:
-                                target_file = max(z_orig.infolist(), key=lambda f: f.file_size).filename
-                                raw_data = z_orig.read(target_file)
-                                try: content_html = raw_data.decode('utf-8')
-                                except: content_html = raw_data.decode('euc-kr', 'ignore')
-                                clean_text = extract_ai_friendly_text(content_html)
-                                
-                                final_content = f"### {corp_name_fixed} {report_name} ###\n접수일: {row['rcept_dt']}\n\n{clean_text}"
-                                zip_file.writestr(file_name, final_content)
-                        except Exception as e:
-                            st.error(f"실패: {file_name}")
-                        progress_bar.progress((idx + 1) / total)
-
-                status_text.success("완료! 버튼을 눌러 저장하세요.")
-                st.download_button(
-                    label="💾 ZIP 파일 저장하기",
-                    data=zip_buffer.getvalue(),
-                    file_name=f"{corp_name_fixed}_Reports.zip",
-                    mime="application/zip",
-                    type="primary",
-                    use_container_width=True
-                )
-
+                            with zipfile.ZipFile(io.BytesIO(res.content)) as z:
+                                t_file = max(z.infolist(), key=lambda f: f.file_size).filename
+                                content = z.read(t_file).decode('utf-8', 'ignore')
+                                final_txt = extract_ai_friendly_text(content)
+                                zip_file.writestr(fname, final_txt)
+                        except:
+                            pass
+                        progress.progress((i+1)/len(df))
+                
+                status.success("완료!")
+                st.download_button("💾 파일 저장", zip_buffer.getvalue(), f"{corp_name_fixed}.zip", "application/zip")
