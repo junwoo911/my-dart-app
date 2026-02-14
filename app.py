@@ -16,7 +16,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-st.title("📥 기업 보고서 즉시 다운로드 (Final Ver.)")
+st.title("📥 기업 보고서 즉시 다운로드 (Final Fix)")
 
 # --- 1. API 키 설정 ---
 if 'api_key' not in st.session_state:
@@ -68,19 +68,18 @@ def fetch_report_list_direct(corp_name, start_date, end_date):
     except Exception as e:
         raise Exception(f"접속 실패: {str(e)}")
 
-# --- [추가된 기능] 최종본만 필터링하는 함수 ---
+# --- 최종본 필터링 함수 ---
 def filter_final_version(df):
     if df is None or len(df) == 0:
         return df
         
-    # 1. 날짜 기준 내림차순 정렬 (최신 날짜가 위로 오게)
+    # 날짜 기준 정렬
     df = df.sort_values(by='rcept_dt', ascending=False)
     
-    # 2. 보고서 제목에서 '(2024.12)' 같은 기간 식별자 추출
-    # 정규식 설명: 괄호 안에 숫자4개.숫자2개 패턴을 찾음
+    # 보고서 기간 식별 (.12, .03, .06, .09 등)
     df['period_id'] = df['report_nm'].str.extract(r'\((\d{4}\.\d{2})\)')
     
-    # 3. 보고서 종류(사업/반기/분기) 식별
+    # 보고서 종류 단순화
     def get_type(nm):
         if "사업보고서" in nm: return "사업"
         if "반기보고서" in nm: return "반기"
@@ -89,14 +88,12 @@ def filter_final_version(df):
     
     df['report_type'] = df['report_nm'].apply(get_type)
     
-    # 4. '기간'과 '종류'가 없는 행(정기공시 아닌 것)은 제외
+    # 기간 식별 안되는 것 제외
     df = df.dropna(subset=['period_id'])
     
-    # 5. [핵심] 같은 종류(사업/분기) + 같은 기간(2024.12)이면 -> 가장 위의 것(최신)만 남기고 중복 제거
-    # keep='first' 옵션이 정렬된 상태에서 맨 위의 것(최종본)만 살립니다.
+    # 같은 종류 + 같은 기간 중 최신만 남김
     df_clean = df.drop_duplicates(subset=['report_type', 'period_id'], keep='first')
     
-    # 6. 임시 컬럼 삭제 및 인덱스 초기화
     return df_clean.drop(columns=['period_id', 'report_type']).reset_index(drop=True)
 
 # --- 3. 텍스트 변환 함수 ---
@@ -147,29 +144,52 @@ if btn_search or ('target_df' in st.session_state and st.session_state.target_df
         start_date = f"{start_year}0101"
         end_date = f"{end_year}1231"
         
-        with st.spinner(f"🚀 '{corp_name}' 최종 보고서 선별 중..."):
+        with st.spinner(f"🚀 '{corp_name}' 보고서 선별 중..."):
             try:
                 df = fetch_report_list_direct(corp_name, start_date, end_date)
                 
                 if df is not None and len(df) > 0:
-                    # 1차: 사용자가 선택한 보고서 종류 필터링
+                    
+                    # --- [수정된 필터링 로직] 숫자(.03, .09)로 정확하게 찾기 ---
                     conditions = []
-                    if "사업보고서" in selected_types: conditions.append(df['report_nm'].str.contains("사업보고서"))
-                    if "반기보고서" in selected_types: conditions.append(df['report_nm'].str.contains("반기보고서"))
-                    if "1분기보고서" in selected_types: conditions.append(df['report_nm'].str.contains(r"분기보고서.*[30]3월|[1]분기"))
-                    if "3분기보고서" in selected_types: conditions.append(df['report_nm'].str.contains(r"분기보고서.*[0]9월|[3]분기"))
+                    
+                    # 1. 사업보고서 (12월)
+                    if "사업보고서" in selected_types: 
+                        conditions.append(df['report_nm'].str.contains("사업보고서"))
+                    
+                    # 2. 반기보고서 (6월, 보통 이름이 명확함)
+                    if "반기보고서" in selected_types: 
+                        conditions.append(df['report_nm'].str.contains("반기보고서"))
+                    
+                    # 3. 1분기 보고서 (이름에 '분기' 포함 AND 괄호 안에 .03 포함)
+                    if "1분기보고서" in selected_types: 
+                        conditions.append(
+                            df['report_nm'].str.contains("분기보고서") & 
+                            df['report_nm'].str.contains(r"\.03\)")
+                        )
+                        
+                    # 4. 3분기 보고서 (이름에 '분기' 포함 AND 괄호 안에 .09 포함)
+                    if "3분기보고서" in selected_types: 
+                        conditions.append(
+                            df['report_nm'].str.contains("분기보고서") & 
+                            df['report_nm'].str.contains(r"\.09\)")
+                        )
 
                     if conditions:
                         final_mask = pd.concat(conditions, axis=1).any(axis=1)
                         filtered_df = df[final_mask].copy()
                         
-                        # [핵심] 여기서 최종본 필터링 함수 실행!
+                        # 최종본만 남기기 (기재정정 처리)
                         clean_df = filter_final_version(filtered_df)
                         
-                        st.session_state.target_df = clean_df
-                        st.session_state.current_corp = corp_name
+                        if len(clean_df) > 0:
+                            st.session_state.target_df = clean_df
+                            st.session_state.current_corp = corp_name
+                        else:
+                             st.warning("검색 결과가 없습니다. (조건에 맞는 보고서가 없음)")
+                             st.session_state.target_df = None
                     else:
-                        st.warning("선택한 종류의 보고서가 없습니다.")
+                        st.warning("선택하신 보고서 종류가 없습니다.")
                         st.session_state.target_df = None
                 else:
                     st.error("❌ 검색 결과가 없거나 차단되었습니다.")
@@ -184,7 +204,6 @@ if btn_search or ('target_df' in st.session_state and st.session_state.target_df
         
         st.divider()
         st.subheader(f"✅ 최종본 검색 결과 ({len(df)}건)")
-        # 표 보여주기
         st.dataframe(df[['rcept_dt', 'report_nm']], use_container_width=True, hide_index=True)
         
         if len(df) > 0:
@@ -199,7 +218,6 @@ if btn_search or ('target_df' in st.session_state and st.session_state.target_df
 
                 with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
                     for i, row in df.iterrows():
-                        # 파일명 정리 (기재정정 등 텍스트는 파일명에는 포함하되, 날짜 중복 제거)
                         rpt_name = row['report_nm']
                         fname = re.sub(r'[\\/*?:"<>|]', "", f"{corp_name_fixed}_{rpt_name}.txt")
                         
@@ -213,10 +231,8 @@ if btn_search or ('target_df' in st.session_state and st.session_state.target_df
                                 content = z.read(t_file).decode('utf-8', 'ignore')
                                 final_txt = extract_ai_friendly_text(content)
                                 
-                                # 텍스트 파일 내부에 정보 기록
                                 header_info = f"### {corp_name_fixed} {rpt_name} (최종본) ###\n"
-                                header_info += f"접수일: {row['rcept_dt']}\n"
-                                header_info += f"비고: {row.get('rm', '')}\n\n" # 기재정정 여부 등
+                                header_info += f"접수일: {row['rcept_dt']}\n\n"
                                 
                                 zip_file.writestr(fname, header_info + final_txt)
                         except:
@@ -225,4 +241,3 @@ if btn_search or ('target_df' in st.session_state and st.session_state.target_df
                 
                 status.success("완료!")
                 st.download_button("💾 파일 저장", zip_buffer.getvalue(), f"{corp_name_fixed}_Final.zip", "application/zip")
-
