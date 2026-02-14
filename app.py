@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 
 # --- 페이지 설정 ---
 st.set_page_config(
-    page_title="One-Click 보고서", 
+    page_title="기업 보고서 원클릭", 
     page_icon="⚡", 
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -45,7 +45,7 @@ def fetch_report_list_direct(corp_name, start_date, end_date):
         'corp_code': corp_code,
         'bgn_de': start_date,
         'end_de': end_date,
-        'pblntf_ty': 'A',  # 정기공시 전체
+        'pblntf_ty': 'A',  # 정기공시 전체 (사업/반기/분기 모두 포함)
         'page_count': 100
     }
     
@@ -68,7 +68,7 @@ def fetch_report_list_direct(corp_name, start_date, end_date):
     except Exception as e:
         raise Exception(f"접속 실패: {str(e)}")
 
-# --- 3. 분류 및 필터링 로직 ---
+# --- 3. 분류 및 필터링 로직 (단순화 버전) ---
 def classify_and_filter(df, selected_types):
     if df is None or len(df) == 0:
         return df
@@ -83,19 +83,24 @@ def classify_and_filter(df, selected_types):
         month = int(dt[4:6]) 
         
         r_type = "기타"
+        # 이름 우선 확인
         if "사업보고서" in nm: r_type = "사업보고서"
         elif "반기보고서" in nm: r_type = "반기보고서"
         elif "분기보고서" in nm:
             if "1분기" in nm: r_type = "1분기보고서"
             elif "3분기" in nm: r_type = "3분기보고서"
+            # 이름에 없으면 월(Month)로 판단
             elif 4 <= month <= 6: r_type = "1분기보고서"
             elif 9 <= month <= 12: r_type = "3분기보고서"
             else: r_type = "분기보고서(기타)"
         smart_types.append(r_type)
 
     df['smart_type'] = smart_types
+    
+    # 선택된 종류 필터링
     filtered_df = df[df['smart_type'].isin(selected_types)].copy()
     
+    # 최종본만 남기기 (같은 종류 + 같은 연도 = 최신 1개)
     if not filtered_df.empty:
         filtered_df['year_key'] = filtered_df['rcept_dt'].str[:4]
         final_df = filtered_df.drop_duplicates(subset=['smart_type', 'year_key'], keep='first')
@@ -129,8 +134,8 @@ with st.container(border=True):
     with col_input:
         corp_name = st.text_input("회사명 입력", placeholder="예: 삼성전자", label_visibility="collapsed")
     with col_btn:
-        # 버튼 이름을 변경해서 기능 통합을 알림
-        btn_search = st.button("검색 및 추출", type="primary", use_container_width=True)
+        # [핵심] 버튼 하나로 통합
+        btn_start = st.button("검색 및 추출 시작", type="primary", use_container_width=True)
 
     with st.expander("📅 설정", expanded=True):
         col1, col2, col3 = st.columns([1, 1, 2])
@@ -142,8 +147,8 @@ with st.container(border=True):
             report_options = ["1분기보고서", "반기보고서", "3분기보고서", "사업보고서"]
             selected_types = st.multiselect("종류", report_options, default=["사업보고서"])
 
-# --- 6. 실행 로직 (통합됨) ---
-if btn_search:
+# --- 6. 통합 실행 로직 (검색 -> 목록확인 -> 즉시추출) ---
+if btn_start:
     if not corp_name:
         st.warning("회사명을 입력해주세요.")
         st.stop()
@@ -151,9 +156,8 @@ if btn_search:
     start_date = f"{start_year}0101"
     end_date = f"{end_year}1231"
     
-    # 1. 목록 검색 시작
-    with st.status("🚀 작업을 시작합니다...", expanded=True) as status:
-        status.write("📡 DART 서버에서 공시 목록을 가져오는 중...")
+    # 1. 목록 가져오기
+    with st.spinner(f"📡 '{corp_name}' 공시 목록을 가져오고 있습니다..."):
         try:
             raw_df = fetch_report_list_direct(corp_name, start_date, end_date)
             
@@ -162,42 +166,41 @@ if btn_search:
                 df = classify_and_filter(raw_df, selected_types)
                 
                 if not df.empty:
-                    st.success(f"✅ {len(df)}건의 보고서를 찾았습니다. 다운로드를 시작합니다!")
+                    # 2. [목록 확인] 표를 먼저 보여줌
+                    st.success(f"✅ 총 {len(df)}건이 검색되었습니다. 즉시 추출을 시작합니다!")
                     st.dataframe(df[['rcept_dt', 'report_nm', 'smart_type']], use_container_width=True, hide_index=True)
                     
-                    # 2. 바로 다운로드 및 변환 시작 (자동 진행)
-                    zip_buffer = io.BytesIO()
-                    progress_bar = st.progress(0)
-                    headers_download = {'User-Agent': 'Mozilla/5.0'}
-                    total = len(df)
+                    # 3. [즉시 추출] 자동으로 다운로드 및 변환 시작
+                    # st.status를 써서 진행 과정을 깔끔하게 보여줌
+                    with st.status("🚀 텍스트 추출 및 ZIP 생성 중...", expanded=True) as status:
+                        zip_buffer = io.BytesIO()
+                        headers_download = {'User-Agent': 'Mozilla/5.0'}
+                        total = len(df)
 
-                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                        for i, (idx, row) in enumerate(df.iterrows()):
-                            rpt_name = row['report_nm']
-                            fname = re.sub(r'[\\/*?:"<>|]', "", f"{corp_name}_{rpt_name}.txt")
-                            
-                            status.write(f"⏳ ({i+1}/{total}) 다운로드 중: {fname}...")
-                            
-                            try:
-                                d_url = f"https://opendart.fss.or.kr/api/document.xml?crtfc_key={api_key}&rcept_no={row['rcept_no']}"
-                                res = requests.get(d_url, headers=headers_download, timeout=15)
-                                with zipfile.ZipFile(io.BytesIO(res.content)) as z:
-                                    t_file = max(z.infolist(), key=lambda f: f.file_size).filename
-                                    content = z.read(t_file).decode('utf-8', 'ignore')
-                                    final_txt = extract_ai_friendly_text(content)
-                                    header_info = f"### {corp_name} {rpt_name} ###\n접수일: {row['rcept_dt']}\n분류: {row['smart_type']}\n\n"
-                                    zip_file.writestr(fname, header_info + final_txt)
-                            except Exception as e:
-                                status.write(f"⚠️ 실패: {fname} ({e})")
-                                pass
-                            
-                            progress_bar.progress((i+1)/total)
+                        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                            for i, (idx, row) in enumerate(df.iterrows()):
+                                rpt_name = row['report_nm']
+                                fname = re.sub(r'[\\/*?:"<>|]', "", f"{corp_name}_{rpt_name}.txt")
+                                
+                                status.write(f"📥 ({i+1}/{total}) 다운로드: {fname}")
+                                
+                                try:
+                                    d_url = f"https://opendart.fss.or.kr/api/document.xml?crtfc_key={api_key}&rcept_no={row['rcept_no']}"
+                                    res = requests.get(d_url, headers=headers_download, timeout=15)
+                                    with zipfile.ZipFile(io.BytesIO(res.content)) as z:
+                                        t_file = max(z.infolist(), key=lambda f: f.file_size).filename
+                                        content = z.read(t_file).decode('utf-8', 'ignore')
+                                        final_txt = extract_ai_friendly_text(content)
+                                        header_info = f"### {corp_name} {rpt_name} ###\n접수일: {row['rcept_dt']}\n분류: {row['smart_type']}\n\n"
+                                        zip_file.writestr(fname, header_info + final_txt)
+                                except Exception as e:
+                                    status.write(f"⚠️ 실패: {fname}")
+                        
+                        status.update(label="🎉 생성 완료! 아래 버튼을 눌러주세요.", state="complete", expanded=False)
                     
-                    status.update(label="🎉 모든 작업 완료! 버튼을 눌러 다운로드하세요.", state="complete", expanded=False)
-                    
-                    # 3. 다운로드 버튼 생성 (이전 세션 상태 유지 불필요)
+                    # 4. [다운로드] 버튼 생성
                     st.download_button(
-                        label="💾 ZIP 파일 즉시 다운로드",
+                        label="💾 ZIP 파일 저장하기",
                         data=zip_buffer.getvalue(),
                         file_name=f"{corp_name}_Reports.zip",
                         mime="application/zip",
@@ -206,8 +209,8 @@ if btn_search:
                     )
                     
                 else:
-                    status.update(label="❌ 조건에 맞는 보고서가 없습니다.", state="error")
+                    st.warning("검색 결과는 있지만, 선택하신 조건(1/3분기 등)에 맞는 보고서가 없습니다.")
             else:
-                status.update(label="❌ 검색된 공시가 없습니다.", state="error")
+                st.error("❌ 검색된 공시가 없습니다.")
         except Exception as e:
-            status.update(label=f"⚠️ 오류 발생: {e}", state="error")
+            st.error(f"오류 발생: {e}")
