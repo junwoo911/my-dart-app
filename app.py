@@ -130,7 +130,8 @@ with st.container(border=True):
     with col_input:
         corp_name = st.text_input("회사명 입력", placeholder="예: 삼성전자", label_visibility="collapsed")
     with col_btn:
-        btn_start = st.button("검색 및 추출 시작", type="primary", use_container_width=True)
+        # [수정] 버튼 이름을 심플하게 '검색'으로 변경
+        btn_start = st.button("검색", type="primary", use_container_width=True)
 
     with st.expander("📅 설정", expanded=True):
         col1, col2, col3 = st.columns([1, 1, 2])
@@ -170,11 +171,8 @@ if btn_start:
                         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
                             for i, (idx, row) in enumerate(df.iterrows()):
                                 
-                                # --- [파일명 생성: DART 원본 제목 유지] ---
+                                # [파일명] DART 원본 제목 유지 (특수문자만 제거)
                                 rpt_name = row['report_nm']
-                                
-                                # 예: 삼성전자_사업보고서 (2023.12).txt
-                                # 특수문자만 제거하고 원본 이름 그대로 사용
                                 fname = re.sub(r'[\\/*?:"<>|]', "", f"{corp_name}_{rpt_name}.txt")
                                 
                                 status.write(f"📥 ({i+1}/{total}) 저장: {fname}")
@@ -197,7 +195,7 @@ if btn_start:
                         
                         status.update(label="🎉 생성 완료! 아래 버튼을 누르세요.", state="complete", expanded=False)
                     
-                    # [파일명 수정] ZIP 파일 이름은 '보고서_모음'으로 깔끔하게
+                    # [압축파일명] '보고서_모음.zip'으로 깔끔하게
                     st.download_button(
                         label="💾 보고서 모음(ZIP) 저장",
                         data=zip_buffer.getvalue(),
