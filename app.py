@@ -16,7 +16,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-st.title("📥 기업 보고서 즉시 다운로드 (Date Logic)")
+st.title("📥 기업 보고서 즉시 다운로드 (Final Stable)")
 
 # --- 1. API 키 설정 ---
 if 'api_key' not in st.session_state:
@@ -39,7 +39,6 @@ def fetch_report_list_direct(corp_name, start_date, end_date):
     except:
         return None
 
-    # 모든 정기공시(A001) 가져오기
     url = "https://opendart.fss.or.kr/api/list.json"
     params = {
         'crtfc_key': api_key,
@@ -65,68 +64,62 @@ def fetch_report_list_direct(corp_name, start_date, end_date):
             df = pd.DataFrame(data['list'])
             return df
         else:
-            return pd.DataFrame() # 결과 없으면 빈 표 반환
+            return pd.DataFrame() 
     except Exception as e:
         raise Exception(f"접속 실패: {str(e)}")
 
-# --- [핵심 수정] 날짜 기반 강력 분류 함수 ---
+# --- [핵심 수정] 오류 없는 단순 분류 로직 ---
 def classify_and_filter(df, selected_types):
     if df is None or len(df) == 0:
         return df
 
-    # 1. 날짜 기준 정렬 (최신순)
+    # 1. 데이터프레임 복사 (SettingWithCopyWarning 방지)
+    df = df.copy()
+
+    # 2. 날짜 기준 정렬
     df = df.sort_values(by='rcept_dt', ascending=False).reset_index(drop=True)
 
-    # 2. 분류 로직 (이름 + 제출월)
-    def get_smart_type(row):
+    # 3. 단순 반복문으로 분류 (apply 에러 원천 차단)
+    smart_types = []
+    
+    for idx, row in df.iterrows():
         nm = row['report_nm']
-        dt = row['rcept_dt'] # YYYYMMDD
-        month = int(dt[4:6]) # 월 추출
+        dt = row['rcept_dt']
+        month = int(dt[4:6]) # '20240515' -> 5
+        
+        r_type = "기타"
         
         if "사업보고서" in nm:
-            return "사업보고서"
+            r_type = "사업보고서"
         elif "반기보고서" in nm:
-            return "반기보고서"
+            r_type = "반기보고서"
         elif "분기보고서" in nm:
-            # 이름에 명확히 1분기/3분기가 있으면 그걸 따름
-            if "1분기" in nm: return "1분기보고서"
-            if "3분기" in nm: return "3분기보고서"
-            
-            # 이름에 없으면 '제출 월'로 판단 (가장 확실함)
-            # 1분기보고서: 보통 5월 제출 (4,5,6월 허용)
+            # 1분기: 보통 5월 제출 (4~6월 허용)
             if 4 <= month <= 6:
-                return "1분기보고서"
-            # 3분기보고서: 보통 11월 제출 (10,11,12월 허용)
-            elif 10 <= month <= 12:
-                return "3분기보고서"
+                r_type = "1분기보고서"
+            # 3분기: 보통 11월 제출 (9~12월 허용)
+            elif 9 <= month <= 12:
+                r_type = "3분기보고서"
+            # 그 외 (혹시 모를 예외)
             else:
-                return "분기보고서(기타)"
-        else:
-            return "기타"
+                r_type = "분기보고서(기타)"
+        
+        smart_types.append(r_type)
 
-    df['smart_type'] = df.apply(get_smart_type, axis=1)
+    # 컬럼 할당
+    df['smart_type'] = smart_types
     
-    # 3. 사용자 선택 필터링
+    # 4. 사용자가 선택한 종류만 필터링
     filtered_df = df[df['smart_type'].isin(selected_types)].copy()
     
-    # 4. 최종본만 남기기 (중복 제거)
-    # 같은 종류(smart_type)이고, 같은 접수년도(year)라면 최신 것만 남김
-    # 단, 기재정정 등이 있을 수 있으므로 '제목'에서 기간을 추출해서 그룹핑
+    # 5. 최종본 필터링 (같은 종류 + 같은 접수년도인 경우 최신만 남김)
+    # 예: 2024년에 접수된 '1분기보고서'가 2개라면(기재정정 등), 가장 위의 것(최신)만 선택
+    filtered_df['year_key'] = filtered_df['rcept_dt'].str[:4] # 연도 추출
     
-    def get_period_key(row):
-        # (2024.03) 같은 날짜 패턴 추출
-        match = re.search(r'\((\d{4}\.\d{2})\)', row['report_nm'])
-        if match:
-            return match.group(1)
-        # 없으면 접수일 기준으로 대강 만듦 (YYYY + 상반기/하반기 등)
-        return row['rcept_dt'][:6] 
-
-    filtered_df['period_key'] = filtered_df.apply(get_period_key, axis=1)
+    # (종류, 연도)가 같으면 중복 제거 -> 최신 1개만 남음
+    final_df = filtered_df.drop_duplicates(subset=['smart_type', 'year_key'], keep='first')
     
-    # 같은 보고서 종류 + 같은 기간 키를 가진 것 중 '가장 위(최신)'만 남김
-    final_df = filtered_df.drop_duplicates(subset=['smart_type', 'period_key'], keep='first')
-    
-    return final_df.drop(columns=['period_key'])
+    return final_df.drop(columns=['year_key'])
 
 # --- 3. 텍스트 변환 함수 ---
 def extract_ai_friendly_text(html_content):
@@ -178,28 +171,30 @@ if btn_search or ('target_df' in st.session_state and st.session_state.target_df
         
         with st.spinner(f"🚀 '{corp_name}' 보고서 수집 중..."):
             try:
-                # 1. 일단 다 가져옴
                 raw_df = fetch_report_list_direct(corp_name, start_date, end_date)
                 
                 if raw_df is not None and len(raw_df) > 0:
-                    st.session_state.raw_df = raw_df # 디버깅용 저장
-                    
-                    # 2. 분류 및 필터링 적용
+                    # 분류 및 필터링
                     clean_df = classify_and_filter(raw_df, selected_types)
                     
-                    st.session_state.target_df = clean_df
-                    st.session_state.current_corp = corp_name
+                    if len(clean_df) > 0:
+                        st.session_state.target_df = clean_df
+                        st.session_state.current_corp = corp_name
+                    else:
+                        st.warning("🔍 검색 결과는 있지만, 선택하신 조건(1/3분기 등)에 맞는 보고서가 없습니다.")
+                        # 혹시 모르니 원본 데이터가 뭐였는지 디버깅용으로 보여줌 (개발자 모드 느낌)
+                        with st.expander("참고: 전체 공시 목록 보기"):
+                            st.dataframe(raw_df[['rcept_dt', 'report_nm']])
+                        st.session_state.target_df = None
                 else:
                     st.error("❌ DART에서 조회된 공시가 없습니다.")
                     st.session_state.target_df = None
-                    st.session_state.raw_df = None
             except Exception as e:
                 st.error(f"⚠️ 오류: {e}")
 
     # 결과 및 다운로드
-    if 'target_df' in st.session_state:
+    if 'target_df' in st.session_state and st.session_state.target_df is not None:
         df = st.session_state.target_df
-        raw_df = st.session_state.get('raw_df', pd.DataFrame())
         corp_name_fixed = st.session_state.get('current_corp', corp_name)
         
         if df is not None and len(df) > 0:
@@ -232,10 +227,3 @@ if btn_search or ('target_df' in st.session_state and st.session_state.target_df
                 
                 status.success("완료!")
                 st.download_button("💾 파일 저장", zip_buffer.getvalue(), f"{corp_name_fixed}_Final.zip", "application/zip")
-        
-        # [안전장치] 필터링 결과는 0건인데, 실제 원본 데이터는 있는 경우
-        elif raw_df is not None and len(raw_df) > 0:
-            st.warning("⚠️ 필터링 결과가 없습니다. (하지만 원본 공시는 존재합니다)")
-            with st.expander("🔍 전체 공시 목록 확인하기 (클릭)"):
-                st.dataframe(raw_df[['rcept_dt', 'report_nm']], use_container_width=True)
-                st.info("원하는 보고서가 목록에 있는데 안 보인다면, '보고서 종류' 선택을 확인해주세요.")
